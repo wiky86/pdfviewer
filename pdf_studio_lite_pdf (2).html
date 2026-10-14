@@ -1,0 +1,2468 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Studio Lite — 개인용 PDF 뷰어 & 편집기</title>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+  <style>
+    body {
+      font-family: 'Inter', 'Noto Sans KR', sans-serif;
+      user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+    .custom-scroll::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    .custom-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: rgba(148, 163, 184, 0.45);
+      border-radius: 9999px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(100, 116, 139, 0.7);
+    }
+    .canvas-checkerboard {
+      background-color: #f1f5f9;
+      background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+      background-size: 16px 16px;
+    }
+    .anno-item {
+      position: absolute;
+      box-sizing: border-box;
+      transform-origin: center center;
+    }
+    .anno-item.selected {
+      outline: 2px solid #2563eb;
+      outline-offset: 2px;
+    }
+    .resize-handle {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #ffffff;
+      border: 2px solid #2563eb;
+      border-radius: 9999px;
+      z-index: 30;
+    }
+    .resize-handle.nw { top: -6px; left: -6px; cursor: nwse-resize; }
+    .resize-handle.ne { top: -6px; right: -6px; cursor: nesw-resize; }
+    .resize-handle.sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+    .resize-handle.se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+    .thumb-card.dragging {
+      opacity: 0.45;
+      transform: scale(0.97);
+    }
+    .thumb-card.drag-over {
+      border-color: #2563eb !important;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25);
+    }
+    #printContainer {
+      display: none;
+    }
+    @media print {
+      @page {
+        margin: 0;
+      }
+      body {
+        background: #ffffff !important;
+        height: auto !important;
+        overflow: visible !important;
+      }
+      #appShell,
+      #insertPdfModal,
+      #printPreviewModal,
+      #toastContainer {
+        display: none !important;
+      }
+      #printContainer {
+        display: block !important;
+        width: 100% !important;
+      }
+      .print-page-sheet {
+        page-break-after: always;
+        break-after: page;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .print-page-sheet:last-child {
+        page-break-after: auto;
+        break-after: auto;
+      }
+      .print-page-sheet img {
+        max-width: 100%;
+        height: auto;
+        display: block;
+      }
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 h-screen flex flex-col overflow-hidden">
+
+  <!-- Dedicated Print Output Container (Visible only during Print) -->
+  <div id="printContainer"></div>
+
+  <!-- Hidden File Inputs -->
+  <input type="file" id="openPdfInput" accept="application/pdf" class="hidden" />
+  <input type="file" id="insertPdfInput" accept="application/pdf" class="hidden" />
+  <input type="file" id="insertImageInput" accept="image/png,image/jpeg,image/webp,image/svg+xml" class="hidden" />
+
+  <!-- Main App Shell -->
+  <div id="appShell" class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- Top Navigation & File Bar -->
+    <header class="bg-slate-900 text-white px-3 py-2 flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 shrink-0 z-30">
+      <div class="flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-inner">
+          <i data-lucide="file-text" class="w-4 h-4 text-white"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="font-bold text-sm tracking-tight">PDF Studio Lite</h1>
+            <span id="docTitleBadge" class="text-[11px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-700 truncate max-w-[180px] sm:max-w-[240px]">열린 문서 없음</span>
+          </div>
+          <p class="text-[11px] text-slate-400 hidden sm:block">개인용 웹 PDF 뷰어 & 편집기 (텍스트·이미지·도형 추가 및 페이지 순서 변경·병합·삭제·인쇄)</p>
+        </div>
+      </div>
+
+      <!-- Primary Document Actions -->
+      <div class="flex items-center flex-wrap gap-1.5">
+        <button id="btnOpenPdf" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition">
+          <i data-lucide="folder-open" class="w-3.5 h-3.5 text-blue-400"></i>
+          <span>PDF 열기</span>
+        </button>
+        <button id="btnOpenInsertPdfModal" disabled class="doc-dep-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition">
+          <i data-lucide="file-plus-2" class="w-3.5 h-3.5 text-emerald-400"></i>
+          <span>다른 PDF 삽입</span>
+        </button>
+        <button id="btnAddBlankPage" disabled class="doc-dep-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition">
+          <i data-lucide="plus-square" class="w-3.5 h-3.5 text-amber-400"></i>
+          <span>빈 페이지 추가</span>
+        </button>
+
+        <div class="h-4 w-px bg-slate-700 mx-0.5 hidden sm:block"></div>
+
+        <button id="btnUndo" title="실행 취소 (Ctrl+Z)" disabled class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40 disabled:pointer-events-none border border-slate-700 transition">
+          <i data-lucide="undo-2" class="w-3.5 h-3.5"></i>
+        </button>
+        <button id="btnRedo" title="다시 실행 (Ctrl+Y)" disabled class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-40 disabled:pointer-events-none border border-slate-700 transition">
+          <i data-lucide="redo-2" class="w-3.5 h-3.5"></i>
+        </button>
+
+        <div class="h-4 w-px bg-slate-700 mx-0.5 hidden sm:block"></div>
+
+        <button id="btnToggleOrganizer" disabled class="doc-dep-btn px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 disabled:opacity-40 disabled:pointer-events-none text-indigo-300 border border-indigo-500/40 text-xs font-medium flex items-center gap-1.5 transition">
+          <i data-lucide="layout-grid" class="w-3.5 h-3.5"></i>
+          <span id="organizerToggleLabel">페이지 전체 관리</span>
+        </button>
+
+        <button id="btnPrintPdf" disabled title="편집된 문서 인쇄 (Ctrl+P)" class="doc-dep-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:pointer-events-none text-white text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition">
+          <i data-lucide="printer" class="w-3.5 h-3.5 text-sky-400"></i>
+          <span>인쇄</span>
+        </button>
+
+        <button id="btnExportPdf" disabled class="doc-dep-btn px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:pointer-events-none text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition">
+          <i data-lucide="download" class="w-3.5 h-3.5"></i>
+          <span>PDF 저장</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- INITIAL UPLOAD SCREEN (Shown when no PDF is loaded) -->
+    <div id="emptyUploadScreen" class="flex-1 canvas-checkerboard flex items-center justify-center p-6 overflow-y-auto">
+      <div id="dropzoneCard" class="bg-white rounded-3xl shadow-xl border-2 border-dashed border-slate-300 hover:border-blue-500 transition-all max-w-xl w-full p-8 sm:p-10 text-center space-y-6">
+        <div class="w-16 h-16 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center mx-auto shadow-inner">
+          <i data-lucide="file-up" class="w-8 h-8"></i>
+        </div>
+
+        <div class="space-y-2">
+          <h2 class="text-xl font-bold text-slate-900">편집할 PDF 파일을 업로드하세요</h2>
+          <p class="text-xs sm:text-sm text-slate-500 leading-relaxed">
+            마우스로 PDF 파일을 이 영역에 끌어다 놓거나 아래 버튼을 눌러 선택하세요.<br />
+            모든 작업은 외부 서버 전송 없이 현재 브라우저 안에서만 안전하게 처리됩니다.
+          </p>
+        </div>
+
+        <div class="flex flex-col sm:flex-row items-center justify-center gap-3 pt-1">
+          <button id="btnInitialUploadPdf" class="w-full sm:w-auto px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold shadow-md flex items-center justify-center gap-2 transition cursor-pointer">
+            <i data-lucide="folder-open" class="w-4 h-4"></i>
+            <span>내 PC에서 PDF 파일 선택</span>
+          </button>
+          <button id="btnStartWithBlankPdf" class="w-full sm:w-auto px-5 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-sm font-medium flex items-center justify-center gap-2 transition cursor-pointer">
+            <i data-lucide="file-plus" class="w-4 h-4 text-slate-500"></i>
+            <span>빈 A4 페이지로 시작</span>
+          </button>
+        </div>
+
+        <div class="pt-4 border-t border-slate-100 grid grid-cols-3 gap-3 text-left">
+          <div class="p-3 rounded-xl bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-1.5 text-xs font-bold text-slate-700 mb-1">
+              <i data-lucide="edit-3" class="w-3.5 h-3.5 text-blue-600"></i>
+              <span>오버레이 편집</span>
+            </div>
+            <p class="text-[11px] text-slate-500">텍스트·이미지·도형·도장·형광펜·가림막 추가</p>
+          </div>
+          <div class="p-3 rounded-xl bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-1.5 text-xs font-bold text-slate-700 mb-1">
+              <i data-lucide="arrow-left-right" class="w-3.5 h-3.5 text-emerald-600"></i>
+              <span>페이지 편집</span>
+            </div>
+            <p class="text-[11px] text-slate-500">페이지 맞교환(2P↔3P), 다른 PDF 병합, 일부 삭제</p>
+          </div>
+          <div class="p-3 rounded-xl bg-slate-50 border border-slate-100">
+            <div class="flex items-center gap-1.5 text-xs font-bold text-slate-700 mb-1">
+              <i data-lucide="printer" class="w-3.5 h-3.5 text-sky-600"></i>
+              <span>인쇄 & 저장</span>
+            </div>
+            <p class="text-[11px] text-slate-500">편집 내역 그대로 즉시 인쇄하거나 새 PDF로 저장</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- EDITOR WORKSPACE (Shown once a PDF is uploaded) -->
+    <div id="editorWorkspaceWrap" class="hidden flex-1 flex flex-col overflow-hidden">
+
+      <!-- Secondary Tool & Annotation Bar -->
+      <div id="editorToolbar" class="bg-white border-b border-slate-200 px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 shrink-0 z-20 shadow-sm">
+        <!-- Left: Tool Selection -->
+        <div class="flex items-center flex-wrap gap-1">
+          <button data-tool="select" class="tool-btn active px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 bg-blue-50 text-blue-700 border border-blue-200 transition">
+            <i data-lucide="mouse-pointer" class="w-3.5 h-3.5"></i>
+            <span>선택/이동</span>
+          </button>
+          <button data-tool="text" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+            <i data-lucide="type" class="w-3.5 h-3.5 text-blue-600"></i>
+            <span>텍스트</span>
+          </button>
+          <button id="btnToolImage" class="px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+            <i data-lucide="image-plus" class="w-3.5 h-3.5 text-emerald-600"></i>
+            <span>이미지 업로드</span>
+          </button>
+
+          <!-- Quick Stamp Dropdown -->
+          <div class="relative">
+            <button id="btnStampMenu" class="px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+              <i data-lucide="stamp" class="w-3.5 h-3.5 text-rose-600"></i>
+              <span>도장/스탬프</span>
+              <i data-lucide="chevron-down" class="w-3 h-3 text-slate-400"></i>
+            </button>
+            <div id="stampPopover" class="hidden absolute left-0 mt-1 w-48 bg-white rounded-xl shadow-lg border border-slate-200 p-1.5 z-50">
+              <p class="text-[11px] font-semibold text-slate-400 px-2 py-1">클릭하여 현재 페이지에 추가</p>
+              <button data-stamp="approved" class="stamp-option w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-xs font-semibold text-emerald-700 flex items-center justify-between">
+                <span>승인 완료 (APPROVED)</span>
+                <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              </button>
+              <button data-stamp="reviewed" class="stamp-option w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-xs font-semibold text-blue-700 flex items-center justify-between">
+                <span>검토필 (REVIEWED)</span>
+                <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+              </button>
+              <button data-stamp="confidential" class="stamp-option w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-xs font-semibold text-rose-700 flex items-center justify-between">
+                <span>대외비 (CONFIDENTIAL)</span>
+                <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+              </button>
+              <button data-stamp="urgent" class="stamp-option w-full text-left px-2.5 py-1.5 rounded-lg hover:bg-slate-50 text-xs font-semibold text-amber-700 flex items-center justify-between">
+                <span>긴급 처리 (URGENT)</span>
+                <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+              </button>
+            </div>
+          </div>
+
+          <div class="h-4 w-px bg-slate-200 mx-1"></div>
+
+          <!-- Shapes & Drawing -->
+          <button data-tool="rect" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+            <i data-lucide="square" class="w-3.5 h-3.5 text-indigo-600"></i>
+            <span>사각형</span>
+          </button>
+          <button data-tool="ellipse" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+            <i data-lucide="circle" class="w-3.5 h-3.5 text-purple-600"></i>
+            <span>원형</span>
+          </button>
+          <button data-tool="arrow" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+            <i data-lucide="move-up-right" class="w-3.5 h-3.5 text-rose-600"></i>
+            <span>화살표/선</span>
+          </button>
+          <button data-tool="highlight" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+            <i data-lucide="highlighter" class="w-3.5 h-3.5 text-amber-500"></i>
+            <span>형광펜</span>
+          </button>
+          <button data-tool="whiteout" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition" title="기존 글자나 민감 정보를 흰색 박스로 가립니다">
+            <i data-lucide="eraser" class="w-3.5 h-3.5 text-rose-500"></i>
+            <span>화이트아웃(가림)</span>
+          </button>
+          <button data-tool="pen" class="tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition">
+            <i data-lucide="pen-tool" class="w-3.5 h-3.5 text-slate-700"></i>
+            <span>자유 펜</span>
+          </button>
+        </div>
+
+        <!-- Right: Page Navigation & Zoom Controls -->
+        <div class="flex items-center gap-2">
+          <div class="flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200">
+            <button id="btnPrevPage" class="p-1 rounded hover:bg-white text-slate-600 disabled:opacity-30 transition" title="이전 페이지">
+              <i data-lucide="chevron-left" class="w-4 h-4"></i>
+            </button>
+            <span id="pageIndicator" class="text-xs font-semibold px-2.5 text-slate-700">1 / 1</span>
+            <button id="btnNextPage" class="p-1 rounded hover:bg-white text-slate-600 disabled:opacity-30 transition" title="다음 페이지">
+              <i data-lucide="chevron-right" class="w-4 h-4"></i>
+            </button>
+          </div>
+
+          <div class="flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200">
+            <button id="btnZoomOut" class="p-1 rounded hover:bg-white text-slate-600 transition" title="축소">
+              <i data-lucide="minus" class="w-3.5 h-3.5"></i>
+            </button>
+            <span id="zoomIndicator" class="text-xs font-semibold px-2 text-slate-700 min-w-[48px] text-center">100%</span>
+            <button id="btnZoomIn" class="p-1 rounded hover:bg-white text-slate-600 transition" title="확대">
+              <i data-lucide="plus" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Workspace Area -->
+      <div class="flex-1 flex overflow-hidden relative">
+
+        <!-- Left Sidebar: Page Thumbnails & Quick Swap/Delete/Insert -->
+        <aside id="leftSidebar" class="w-64 sm:w-72 bg-white border-r border-slate-200 flex flex-col shrink-0 z-10">
+          <div class="p-3 border-b border-slate-200 bg-slate-50/70 space-y-2.5">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-1.5">
+                <i data-lucide="layers" class="w-4 h-4 text-blue-600"></i>
+                <h2 class="text-xs font-bold text-slate-800 uppercase tracking-wider">페이지 목록 & 순서 편집</h2>
+              </div>
+              <span id="totalPagesBadge" class="text-[11px] font-semibold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">총 0P</span>
+            </div>
+
+            <!-- Quick Swap Box (e.g. Swap 2P <-> 3P) -->
+            <div class="bg-white p-2 rounded-lg border border-slate-200 shadow-2xs space-y-1.5">
+              <div class="flex items-center justify-between">
+                <span class="text-[11px] font-semibold text-slate-600 flex items-center gap-1">
+                  <i data-lucide="arrow-left-right" class="w-3 h-3 text-blue-600"></i>
+                  빠른 페이지 맞교환 (예: 2P ↔ 3P)
+                </span>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <select id="swapPageASelect" class="flex-1 text-xs border border-slate-200 rounded-md px-1.5 py-1 bg-slate-50 font-medium text-slate-700 focus:outline-none focus:border-blue-500"></select>
+                <span class="text-xs text-slate-400 font-bold">↔</span>
+                <select id="swapPageBSelect" class="flex-1 text-xs border border-slate-200 rounded-md px-1.5 py-1 bg-slate-50 font-medium text-slate-700 focus:outline-none focus:border-blue-500"></select>
+                <button id="btnSwapPagesQuick" class="px-2.5 py-1 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition shrink-0">
+                  교환
+                </button>
+              </div>
+            </div>
+
+            <p class="text-[11px] text-slate-500 leading-tight">
+              썸네일을 드래그하거나 <span class="font-semibold text-slate-700">▲/▼</span> 버튼으로 순서를 바꾸고, 원하는 위치에 새 PDF나 빈 페이지를 삽입하세요.
+            </p>
+          </div>
+
+          <!-- Thumbnail Scroll List -->
+          <div id="thumbnailList" class="flex-1 overflow-y-auto custom-scroll p-3 space-y-2.5"></div>
+        </aside>
+
+        <!-- Center: Interactive PDF Canvas Stage -->
+        <main id="centerStage" class="flex-1 canvas-checkerboard overflow-auto custom-scroll flex flex-col items-center p-4 sm:p-6 relative">
+          <!-- Floating Hint Banner -->
+          <div id="toolHintBanner" class="mb-3 px-3 py-1.5 rounded-full bg-slate-900/80 text-white text-xs font-medium backdrop-blur-xs shadow-sm flex items-center gap-2">
+            <i data-lucide="info" class="w-3.5 h-3.5 text-blue-400 shrink-0"></i>
+            <span id="toolHintText">요소를 클릭해 이동·크기 조절하거나 상단 도구(텍스트, 이미지, 도형)를 선택해 페이지 위에 추가하세요.</span>
+          </div>
+
+          <!-- Page Wrapper -->
+          <div id="pageCanvasContainer" class="relative bg-white shadow-xl border border-slate-300 transition-all duration-150" style="width: 595px; height: 842px;">
+            <!-- Base PDF Render Canvas -->
+            <canvas id="pdfRenderCanvas" class="block w-full h-full pointer-events-none"></canvas>
+
+            <!-- Interactive SVG & DOM Overlay Layer -->
+            <div id="annotationLayer" class="absolute inset-0 overflow-hidden"></div>
+          </div>
+
+          <!-- Bottom Quick Page Action Bar -->
+          <div class="mt-4 bg-white/95 backdrop-blur-xs border border-slate-200 rounded-xl shadow-md px-3 py-2 flex flex-wrap items-center gap-2">
+            <span id="currentPageMetaLabel" class="text-xs font-semibold text-slate-700 px-1">현재 1페이지</span>
+            <div class="h-3.5 w-px bg-slate-200"></div>
+            <button id="btnMovePagePrev" class="px-2 py-1 rounded-md hover:bg-slate-100 text-xs font-medium text-slate-700 flex items-center gap-1 transition">
+              <i data-lucide="arrow-up" class="w-3.5 h-3.5 text-slate-500"></i>
+              <span>앞으로 이동</span>
+            </button>
+            <button id="btnMovePageNext" class="px-2 py-1 rounded-md hover:bg-slate-100 text-xs font-medium text-slate-700 flex items-center gap-1 transition">
+              <i data-lucide="arrow-down" class="w-3.5 h-3.5 text-slate-500"></i>
+              <span>뒤로 이동</span>
+            </button>
+            <button id="btnRotatePage" class="px-2 py-1 rounded-md hover:bg-slate-100 text-xs font-medium text-slate-700 flex items-center gap-1 transition">
+              <i data-lucide="rotate-cw" class="w-3.5 h-3.5 text-slate-500"></i>
+              <span>90° 회전</span>
+            </button>
+            <button id="btnDuplicatePage" class="px-2 py-1 rounded-md hover:bg-slate-100 text-xs font-medium text-slate-700 flex items-center gap-1 transition">
+              <i data-lucide="copy" class="w-3.5 h-3.5 text-slate-500"></i>
+              <span>페이지 복제</span>
+            </button>
+            <button id="btnDeleteCurrentPage" class="px-2 py-1 rounded-md hover:bg-rose-50 text-xs font-medium text-rose-600 flex items-center gap-1 transition">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              <span>현재 페이지 삭제</span>
+            </button>
+          </div>
+        </main>
+
+        <!-- Full-Screen Page Organizer Grid View (Hidden by Default) -->
+        <section id="organizerView" class="hidden absolute inset-0 bg-slate-100 z-20 flex-col overflow-hidden">
+          <div class="bg-white border-b border-slate-200 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <i data-lucide="layout-grid" class="w-4 h-4 text-indigo-600"></i>
+                <span>페이지 전체 구성 & 순서 관리</span>
+              </h2>
+              <p class="text-xs text-slate-500">카드를 선택해 맞교환하거나, 원하는 페이지 사이에 새 PDF를 삽입하고 불필요한 페이지를 삭제하세요.</p>
+            </div>
+            <div class="flex items-center flex-wrap gap-2">
+              <button id="btnOrganizerSwapSelected" class="px-3 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40 disabled:pointer-events-none transition" disabled>
+                <i data-lucide="arrow-left-right" class="w-3.5 h-3.5"></i>
+                <span>선택한 2개 페이지 맞교환</span>
+              </button>
+              <button id="btnOrganizerDeleteSelected" class="px-3 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-40 disabled:pointer-events-none transition" disabled>
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                <span>선택 페이지 삭제</span>
+              </button>
+              <button id="btnCloseOrganizer" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center gap-1.5 transition">
+                <i data-lucide="check" class="w-3.5 h-3.5"></i>
+                <span>편집 뷰어로 돌아가기</span>
+              </button>
+            </div>
+          </div>
+          <div id="organizerGrid" class="flex-1 overflow-y-auto custom-scroll p-6 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5 content-start"></div>
+        </section>
+
+        <!-- Right Sidebar: Object Inspector & Page Layers -->
+        <aside id="rightSidebar" class="w-64 sm:w-72 bg-white border-l border-slate-200 flex flex-col shrink-0 z-10">
+          <div class="p-3 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between">
+            <div class="flex items-center gap-1.5">
+              <i data-lucide="sliders-horizontal" class="w-4 h-4 text-blue-600"></i>
+              <h2 class="text-xs font-bold text-slate-800 uppercase tracking-wider">요소 속성 & 레이어</h2>
+            </div>
+            <span id="selectedTypeBadge" class="text-[11px] font-medium bg-slate-200 text-slate-700 px-2 py-0.5 rounded">선택 없음</span>
+          </div>
+
+          <!-- Inspector Controls -->
+          <div class="p-3 border-b border-slate-200 space-y-3 overflow-y-auto max-h-[60%] custom-scroll">
+            <!-- Empty Selection Prompt -->
+            <div id="inspectorEmptyState" class="text-center py-4 px-2 space-y-2">
+              <div class="w-9 h-9 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+                <i data-lucide="sparkles" class="w-4 h-4"></i>
+              </div>
+              <p class="text-xs font-medium text-slate-600">페이지 위의 요소를 선택하거나 새 요소를 추가하세요</p>
+              <div class="grid grid-cols-2 gap-1.5 pt-1">
+                <button id="btnQuickAddText" class="px-2 py-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-medium flex items-center justify-center gap-1 transition">
+                  <i data-lucide="type" class="w-3.5 h-3.5"></i>
+                  <span>+ 텍스트 상자</span>
+                </button>
+                <button id="btnQuickAddRect" class="px-2 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-medium flex items-center justify-center gap-1 transition">
+                  <i data-lucide="square" class="w-3.5 h-3.5"></i>
+                  <span>+ 도형 상자</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Active Element Controls -->
+            <div id="inspectorForm" class="hidden space-y-3">
+              <!-- Text Content Field (Only for Text/Stamp) -->
+              <div id="textPropsGroup" class="space-y-2">
+                <label class="block text-[11px] font-semibold text-slate-600">텍스트 내용</label>
+                <textarea id="propTextValue" rows="2" class="w-full text-xs border border-slate-200 rounded-lg p-2 focus:outline-none focus:border-blue-500 text-slate-800" placeholder="내용을 입력하세요"></textarea>
+                <div class="grid grid-cols-2 gap-2">
+                  <div>
+                    <label class="block text-[11px] font-semibold text-slate-600 mb-1">글자 크기 (pt)</label>
+                    <input type="number" id="propFontSize" min="8" max="96" value="18" class="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <label class="block text-[11px] font-semibold text-slate-600 mb-1">글자 스타일</label>
+                    <div class="flex items-center gap-1">
+                      <button id="propFontBold" type="button" class="flex-1 py-1.5 rounded-lg border border-slate-200 text-xs font-bold hover:bg-slate-100 transition">B</button>
+                      <button id="propBgToggle" type="button" class="flex-1 py-1.5 rounded-lg border border-slate-200 text-[11px] font-medium hover:bg-slate-100 transition">배경채움</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Colors & Stroke -->
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label id="primaryColorLabel" class="block text-[11px] font-semibold text-slate-600 mb-1">선 / 글자 색상</label>
+                  <div class="flex items-center gap-1.5 border border-slate-200 rounded-lg p-1 bg-slate-50">
+                    <input type="color" id="propStrokeColor" value="#1d4ed8" class="w-6 h-6 rounded cursor-pointer border-0 bg-transparent" />
+                    <span id="propStrokeColorHex" class="text-[11px] font-mono text-slate-600">#1D4ED8</span>
+                  </div>
+                </div>
+                <div id="fillColorWrap">
+                  <label class="block text-[11px] font-semibold text-slate-600 mb-1">채우기 색상</label>
+                  <div class="flex items-center gap-1.5 border border-slate-200 rounded-lg p-1 bg-slate-50">
+                    <input type="color" id="propFillColor" value="#dbeafe" class="w-6 h-6 rounded cursor-pointer border-0 bg-transparent" />
+                    <label class="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer">
+                      <input type="checkbox" id="propFillEnabled" class="rounded text-blue-600" />
+                      <span>채움</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <div class="grid grid-cols-2 gap-2">
+                <div id="strokeWidthWrap">
+                  <label class="block text-[11px] font-semibold text-slate-600 mb-1">선 두께 (px)</label>
+                  <input type="range" id="propStrokeWidth" min="1" max="16" value="3" class="w-full accent-blue-600" />
+                </div>
+                <div>
+                  <label class="block text-[11px] font-semibold text-slate-600 mb-1">투명도 (<span id="propOpacityLabel">100%</span>)</label>
+                  <input type="range" id="propOpacity" min="15" max="100" value="100" class="w-full accent-blue-600" />
+                </div>
+              </div>
+
+              <!-- Layer & Delete Actions -->
+              <div class="pt-2 border-t border-slate-100 flex items-center justify-between gap-1.5">
+                <button id="btnBringFront" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-medium transition">맨 앞으로</button>
+                <button id="btnDuplicateAnno" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-medium transition">복제</button>
+                <button id="btnDeleteAnno" class="flex-1 py-1.5 px-2 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 text-[11px] font-semibold transition">삭제</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Current Page Overlay List -->
+          <div class="flex-1 flex flex-col overflow-hidden">
+            <div class="px-3 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+              <span class="text-[11px] font-bold text-slate-600 uppercase">현재 페이지 추가 요소</span>
+              <span id="annoCountBadge" class="text-[11px] font-semibold text-slate-500">0개</span>
+            </div>
+            <div id="annoLayerList" class="flex-1 overflow-y-auto custom-scroll p-2.5 space-y-1.5"></div>
+          </div>
+        </aside>
+
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Modal: Insert / Merge Another PDF at Specific Position -->
+  <div id="insertPdfModal" class="hidden fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-md overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
+        <div class="flex items-center gap-2">
+          <div class="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
+            <i data-lucide="file-plus-2" class="w-4 h-4"></i>
+          </div>
+          <div>
+            <h3 class="text-sm font-bold text-slate-800">원하는 위치에 다른 PDF 삽입 / 병합</h3>
+            <p class="text-[11px] text-slate-500">내 PC의 다른 PDF 파일을 원하는 페이지 사이에 끼워 넣습니다.</p>
+          </div>
+        </div>
+        <button id="btnCloseInsertModal" class="p-1 rounded-lg hover:bg-slate-200 text-slate-500">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <div class="p-5 space-y-4">
+        <!-- Step 1: Choose Source PDF -->
+        <div class="space-y-2">
+          <label class="block text-xs font-bold text-slate-700">1. 삽입할 PDF 파일 선택</label>
+          <button id="btnPickLocalInsertPdf" class="w-full p-4 rounded-xl border-2 border-dashed border-slate-300 hover:border-blue-500 hover:bg-blue-50/40 text-center transition flex flex-col items-center gap-1 cursor-pointer">
+            <i data-lucide="upload-cloud" class="w-6 h-6 text-blue-600"></i>
+            <span class="text-xs font-semibold text-slate-700">내 PC에서 삽입할 PDF 파일 선택</span>
+            <span class="text-[11px] text-slate-400">클릭하여 .pdf 파일을 선택하세요</span>
+          </button>
+          <div id="selectedInsertFileBox" class="px-3 py-2 rounded-lg bg-slate-100 text-xs text-slate-700 flex items-center justify-between">
+            <span id="selectedInsertFileName" class="font-medium truncate">선택된 파일 없음</span>
+            <span id="selectedInsertPageCount" class="text-[11px] font-bold text-blue-600 shrink-0 ml-2">-</span>
+          </div>
+        </div>
+
+        <!-- Step 2: Which pages of the new PDF to insert -->
+        <div class="space-y-1.5">
+          <label class="block text-xs font-bold text-slate-700">2. 가져올 페이지 범위</label>
+          <input type="text" id="insertPageRangeInput" value="all" class="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500" placeholder="전체는 all, 또는 예: 1, 2, 1-3" />
+          <p class="text-[11px] text-slate-400">전체 페이지를 넣으려면 <code class="text-slate-600 font-semibold">all</code>, 일부만 넣으려면 <code class="text-slate-600 font-semibold">1</code> 또는 <code class="text-slate-600 font-semibold">1-3</code>처럼 입력하세요.</p>
+        </div>
+
+        <!-- Step 3: Where to insert in current PDF -->
+        <div class="space-y-1.5">
+          <label class="block text-xs font-bold text-slate-700">3. 현재 문서의 어느 위치에 넣을까요?</label>
+          <select id="insertTargetPositionSelect" class="w-full text-xs border border-slate-200 rounded-lg px-3 py-2 bg-white font-medium text-slate-800 focus:outline-none focus:border-blue-500"></select>
+        </div>
+      </div>
+
+      <div class="px-5 py-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-end gap-2">
+        <button id="btnCancelInsertModal" class="px-3.5 py-1.5 rounded-lg border border-slate-300 hover:bg-slate-100 text-xs font-medium text-slate-700">취소</button>
+        <button id="btnConfirmInsertPdf" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs">지정한 위치에 페이지 삽입</button>
+      </div>
+    </div>
+  </div>
+
+
+
+  <!-- Toast Notification -->
+  <div id="toastContainer" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
+  <script>
+    // Configure pdf.js worker safely
+    if (window.pdfjsLib && !window.pdfjsWorker) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    // Application State (Starts empty with no sample PDF loaded)
+    const state = {
+      docName: '',
+      pdfSources: {}, // sourceId -> { id, name, bytes: Uint8Array, pdfJsDoc }
+      pages: [],      // Array of { id, sourceId, sourcePageIndex, originLabel, width, height, rotation, annotations: [] }
+      currentPageIndex: 0,
+      zoom: 1.0,
+      activeTool: 'select', // 'select' | 'text' | 'rect' | 'ellipse' | 'arrow' | 'highlight' | 'whiteout' | 'pen'
+      selectedAnnoId: null,
+      organizerOpen: false,
+      organizerSelectedIds: new Set(),
+      history: [],
+      historyIndex: -1,
+      pendingInsertSource: null, // { id, name, bytes, pdfJsDoc, numPages }
+      dragThumbIndex: null
+    };
+
+    let uniqueCounter = 1;
+    function nextId(prefix = 'id') {
+      return `${prefix}_${Date.now()}_${uniqueCounter++}`;
+    }
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toastContainer');
+      const el = document.createElement('div');
+      const colorClass = type === 'success'
+        ? 'bg-emerald-900/95 border-emerald-700 text-white'
+        : type === 'warn'
+        ? 'bg-amber-900/95 border-amber-700 text-white'
+        : 'bg-slate-900/95 border-slate-700 text-white';
+      el.className = `px-3.5 py-2.5 rounded-xl border shadow-lg text-xs font-medium flex items-center gap-2 transition-all duration-200 ${colorClass}`;
+      el.innerHTML = `<span class="w-2 h-2 rounded-full ${type === 'success' ? 'bg-emerald-400' : type === 'warn' ? 'bg-amber-400' : 'bg-blue-400'}"></span><span>${message}</span>`;
+      container.appendChild(el);
+      setTimeout(() => {
+        el.style.opacity = '0';
+        setTimeout(() => el.remove(), 220);
+      }, 2800);
+    }
+
+    // History Snapshot for Undo / Redo
+    function pushHistory() {
+      const snapshot = JSON.stringify({
+        pages: state.pages,
+        currentPageIndex: state.currentPageIndex
+      });
+      if (state.historyIndex >= 0 && state.history[state.historyIndex] === snapshot) return;
+      state.history = state.history.slice(0, state.historyIndex + 1);
+      state.history.push(snapshot);
+      if (state.history.length > 35) state.history.shift();
+      state.historyIndex = state.history.length - 1;
+      updateUndoRedoButtons();
+    }
+
+    function restoreHistory(index) {
+      if (index < 0 || index >= state.history.length) return;
+      state.historyIndex = index;
+      const data = JSON.parse(state.history[index]);
+      state.pages = data.pages;
+      state.currentPageIndex = Math.min(data.currentPageIndex, Math.max(0, state.pages.length - 1));
+      state.selectedAnnoId = null;
+      updateUndoRedoButtons();
+      renderAll();
+    }
+
+    function updateUndoRedoButtons() {
+      document.getElementById('btnUndo').disabled = state.historyIndex <= 0;
+      document.getElementById('btnRedo').disabled = state.historyIndex >= state.history.length - 1;
+    }
+
+    // Load a main PDF file from Uint8Array
+    async function loadMainPdfBytes(bytes, fileName) {
+      try {
+        const sourceId = nextId('src');
+        const pdfJsDoc = await window.pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+        state.pdfSources[sourceId] = {
+          id: sourceId,
+          name: fileName,
+          bytes,
+          pdfJsDoc
+        };
+        state.docName = fileName;
+        document.getElementById('docTitleBadge').textContent = fileName;
+
+        const newPages = [];
+        for (let i = 0; i < pdfJsDoc.numPages; i++) {
+          const pdfPage = await pdfJsDoc.getPage(i + 1);
+          const vp = pdfPage.getViewport({ scale: 1 });
+          newPages.push({
+            id: nextId('page'),
+            sourceId,
+            sourcePageIndex: i,
+            originLabel: `원본 ${i + 1}P`,
+            width: vp.width || 595.28,
+            height: vp.height || 841.89,
+            rotation: 0,
+            annotations: []
+          });
+        }
+
+        state.pages = newPages;
+        state.currentPageIndex = 0;
+        state.selectedAnnoId = null;
+        state.history = [];
+        state.historyIndex = -1;
+        pushHistory();
+        await renderAll();
+      } catch (err) {
+        console.error(err);
+        showToast('PDF 파일을 읽는 중 오류가 발생했습니다. 정상적인 PDF 파일인지 확인해 주세요.', 'warn');
+      }
+    }
+
+    // Start with a blank A4 document
+    async function startWithBlankDocument() {
+      state.docName = '새_문서.pdf';
+      document.getElementById('docTitleBadge').textContent = state.docName;
+      state.pages = [
+        {
+          id: nextId('page'),
+          sourceId: null,
+          sourcePageIndex: 0,
+          originLabel: '빈 페이지 1P',
+          width: 595.28,
+          height: 841.89,
+          rotation: 0,
+          annotations: []
+        }
+      ];
+      state.currentPageIndex = 0;
+      state.selectedAnnoId = null;
+      state.history = [];
+      state.historyIndex = -1;
+      pushHistory();
+      await renderAll();
+      showToast('빈 A4 문서가 생성되었습니다.', 'success');
+    }
+
+    // Render everything (toggles between Initial Upload Screen and Editor Workspace)
+    async function renderAll() {
+      const hasDoc = state.pages.length > 0;
+      const emptyScreen = document.getElementById('emptyUploadScreen');
+      const editorWrap = document.getElementById('editorWorkspaceWrap');
+
+      document.querySelectorAll('.doc-dep-btn').forEach((btn) => {
+        btn.disabled = !hasDoc;
+      });
+
+      if (!hasDoc) {
+        emptyScreen.classList.remove('hidden');
+        editorWrap.classList.add('hidden');
+        document.getElementById('docTitleBadge').textContent = '열린 문서 없음';
+        if (window.lucide) window.lucide.createIcons();
+        return;
+      }
+
+      emptyScreen.classList.add('hidden');
+      editorWrap.classList.remove('hidden');
+
+      updatePageCountersAndControls();
+      await renderCurrentPageCanvas();
+      renderAnnotationLayer();
+      renderInspector();
+      await renderThumbnails();
+      if (state.organizerOpen) {
+        await renderOrganizerGrid();
+      }
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    function updatePageCountersAndControls() {
+      const total = state.pages.length;
+      const cur = state.currentPageIndex + 1;
+      document.getElementById('pageIndicator').textContent = `${cur} / ${total}`;
+      document.getElementById('totalPagesBadge').textContent = `총 ${total}P`;
+      document.getElementById('zoomIndicator').textContent = `${Math.round(state.zoom * 100)}%`;
+
+      const curPage = state.pages[state.currentPageIndex];
+      document.getElementById('currentPageMetaLabel').textContent = curPage
+        ? `현재 ${cur}페이지 (${curPage.originLabel})`
+        : `현재 ${cur}페이지`;
+
+      document.getElementById('btnPrevPage').disabled = state.currentPageIndex <= 0;
+      document.getElementById('btnNextPage').disabled = state.currentPageIndex >= total - 1;
+      document.getElementById('btnMovePagePrev').disabled = state.currentPageIndex <= 0;
+      document.getElementById('btnMovePageNext').disabled = state.currentPageIndex >= total - 1;
+      document.getElementById('btnDeleteCurrentPage').disabled = total <= 1;
+
+      // Populate Quick Swap dropdowns
+      const selA = document.getElementById('swapPageASelect');
+      const selB = document.getElementById('swapPageBSelect');
+      const prevA = parseInt(selA.value, 10);
+      const prevB = parseInt(selB.value, 10);
+      selA.innerHTML = '';
+      selB.innerHTML = '';
+      state.pages.forEach((p, idx) => {
+        const optA = document.createElement('option');
+        optA.value = idx;
+        optA.textContent = `${idx + 1}P (${p.originLabel})`;
+        selA.appendChild(optA);
+
+        const optB = document.createElement('option');
+        optB.value = idx;
+        optB.textContent = `${idx + 1}P (${p.originLabel})`;
+        selB.appendChild(optB);
+      });
+      if (!isNaN(prevA) && prevA < total) {
+        selA.value = prevA;
+      } else {
+        selA.value = total >= 3 ? 1 : 0;
+      }
+      if (!isNaN(prevB) && prevB < total) {
+        selB.value = prevB;
+      } else {
+        selB.value = total >= 3 ? 2 : Math.min(1, total - 1);
+      }
+    }
+
+    // Render PDF page into given canvas element
+    async function renderPageToCanvas(pageObj, canvas, targetWidthPx) {
+      const ctx = canvas.getContext('2d');
+      const rot = ((pageObj.rotation % 360) + 360) % 360;
+      const isSwappedDim = rot === 90 || rot === 270;
+      const baseW = isSwappedDim ? pageObj.height : pageObj.width;
+      const baseH = isSwappedDim ? pageObj.width : pageObj.height;
+      const scale = targetWidthPx / baseW;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      canvas.width = Math.round(baseW * scale * dpr);
+      canvas.height = Math.round(baseH * scale * dpr);
+      canvas.style.width = `${Math.round(baseW * scale)}px`;
+      canvas.style.height = `${Math.round(baseH * scale)}px`;
+
+      ctx.save();
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.restore();
+
+      if (pageObj.sourceId && state.pdfSources[pageObj.sourceId]) {
+        const src = state.pdfSources[pageObj.sourceId];
+        const pdfPage = await src.pdfJsDoc.getPage(pageObj.sourcePageIndex + 1);
+        const totalRotation = (pdfPage.rotate + rot) % 360;
+        const viewport = pdfPage.getViewport({ scale: scale * dpr, rotation: totalRotation });
+        await pdfPage.render({ canvasContext: ctx, viewport }).promise;
+      }
+    }
+
+    async function renderCurrentPageCanvas() {
+      const pageObj = state.pages[state.currentPageIndex];
+      if (!pageObj) return;
+      const container = document.getElementById('pageCanvasContainer');
+      const canvas = document.getElementById('pdfRenderCanvas');
+      const rot = ((pageObj.rotation % 360) + 360) % 360;
+      const isSwappedDim = rot === 90 || rot === 270;
+      const baseW = isSwappedDim ? pageObj.height : pageObj.width;
+      const baseH = isSwappedDim ? pageObj.width : pageObj.height;
+
+      const displayW = Math.round(baseW * state.zoom);
+      const displayH = Math.round(baseH * state.zoom);
+      container.style.width = `${displayW}px`;
+      container.style.height = `${displayH}px`;
+
+      await renderPageToCanvas(pageObj, canvas, displayW);
+    }
+
+    // Interactive Overlay Annotation Layer
+    function renderAnnotationLayer() {
+      const layer = document.getElementById('annotationLayer');
+      layer.innerHTML = '';
+      const pageObj = state.pages[state.currentPageIndex];
+      if (!pageObj) return;
+
+      const z = state.zoom;
+
+      pageObj.annotations.forEach((anno) => {
+        const el = document.createElement('div');
+        el.className = `anno-item ${anno.id === state.selectedAnnoId ? 'selected' : ''}`;
+        el.dataset.id = anno.id;
+        el.style.left = `${anno.x * z}px`;
+        el.style.top = `${anno.y * z}px`;
+        el.style.width = `${Math.max(20, anno.w * z)}px`;
+        el.style.height = `${Math.max(20, anno.h * z)}px`;
+        el.style.opacity = (anno.opacity ?? 100) / 100;
+        el.style.cursor = state.activeTool === 'select' ? 'move' : 'crosshair';
+
+        if (anno.type === 'text' || anno.type === 'stamp') {
+          el.style.display = 'flex';
+          el.style.alignItems = 'center';
+          el.style.justifyContent = anno.type === 'stamp' ? 'center' : 'flex-start';
+          el.style.padding = `${4 * z}px ${8 * z}px`;
+          el.style.color = anno.strokeColor || '#1e293b';
+          el.style.fontSize = `${(anno.fontSize || 16) * z}px`;
+          el.style.fontWeight = anno.bold ? '700' : '500';
+          el.style.lineHeight = '1.3';
+          el.style.whiteSpace = 'pre-wrap';
+          el.style.wordBreak = 'break-word';
+          el.style.borderRadius = anno.type === 'stamp' ? `${8 * z}px` : `${4 * z}px`;
+          if (anno.fillEnabled) {
+            el.style.backgroundColor = anno.fillColor || '#eff6ff';
+          }
+          if (anno.type === 'stamp' || (anno.strokeWidth && anno.strokeWidth > 0 && anno.fillEnabled)) {
+            el.style.border = `${Math.max(1, (anno.strokeWidth || 2) * z)}px solid ${anno.strokeColor || '#1d4ed8'}`;
+          }
+          el.textContent = anno.text || '텍스트 입력';
+
+          el.addEventListener('dblclick', (e) => {
+            e.stopPropagation();
+            state.selectedAnnoId = anno.id;
+            renderAnnotationLayer();
+            renderInspector();
+            const input = document.getElementById('propTextValue');
+            if (input) {
+              input.focus();
+              input.select();
+            }
+          });
+        } else if (anno.type === 'image') {
+          const img = document.createElement('img');
+          img.src = anno.src;
+          img.className = 'w-full h-full object-contain pointer-events-none select-none';
+          el.appendChild(img);
+        } else if (anno.type === 'rect' || anno.type === 'highlight' || anno.type === 'whiteout') {
+          el.style.borderRadius = anno.type === 'whiteout' ? '0px' : `${3 * z}px`;
+          if (anno.type === 'highlight') {
+            el.style.backgroundColor = anno.fillColor || '#fde047';
+            el.style.mixBlendMode = 'multiply';
+          } else if (anno.type === 'whiteout') {
+            el.style.backgroundColor = anno.fillColor || '#ffffff';
+            el.style.border = '1px dashed #cbd5e1';
+          } else {
+            if (anno.fillEnabled) el.style.backgroundColor = anno.fillColor || '#dbeafe';
+            el.style.border = `${Math.max(1, (anno.strokeWidth || 3) * z)}px solid ${anno.strokeColor || '#2563eb'}`;
+          }
+        } else if (anno.type === 'ellipse') {
+          el.style.borderRadius = '9999px';
+          if (anno.fillEnabled) el.style.backgroundColor = anno.fillColor || '#f3e8ff';
+          el.style.border = `${Math.max(1, (anno.strokeWidth || 3) * z)}px solid ${anno.strokeColor || '#7c3aed'}`;
+        } else if (anno.type === 'arrow') {
+          const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          svg.setAttribute('class', 'w-full h-full overflow-visible pointer-events-none');
+          const sw = Math.max(2, (anno.strokeWidth || 3) * z);
+          const color = anno.strokeColor || '#e11d48';
+          const w = Math.max(20, anno.w * z);
+          const h = Math.max(20, anno.h * z);
+          const markerId = `arrow_${anno.id}`;
+          svg.innerHTML = `
+            <defs>
+              <marker id="${markerId}" markerWidth="10" markerHeight="10" refX="7" refY="3.5" orient="auto">
+                <polygon points="0 0, 8 3.5, 0 7" fill="${color}" />
+              </marker>
+            </defs>
+            <line x1="4" y1="${h - 4}" x2="${w - 8}" y2="6" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" marker-end="url(#${markerId})" />
+          `;
+          el.appendChild(svg);
+        } else if (anno.type === 'pen' && Array.isArray(anno.points)) {
+          const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+          svg.setAttribute('class', 'w-full h-full overflow-visible pointer-events-none');
+          const sw = Math.max(1.5, (anno.strokeWidth || 3) * z);
+          const color = anno.strokeColor || '#0f172a';
+          const d = anno.points.map((pt, idx) => `${idx === 0 ? 'M' : 'L'} ${(pt.x - anno.x) * z} ${(pt.y - anno.y) * z}`).join(' ');
+          svg.innerHTML = `<path d="${d}" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" />`;
+          el.appendChild(svg);
+        }
+
+        el.addEventListener('mousedown', (e) => {
+          if (e.target.classList.contains('resize-handle')) return;
+          e.stopPropagation();
+          state.selectedAnnoId = anno.id;
+          renderAnnotationLayer();
+          renderInspector();
+          startDragAnnotation(e, anno);
+        });
+
+        if (anno.id === state.selectedAnnoId) {
+          ['nw', 'ne', 'sw', 'se'].forEach((dir) => {
+            const handle = document.createElement('div');
+            handle.className = `resize-handle ${dir}`;
+            handle.addEventListener('mousedown', (e) => {
+              e.stopPropagation();
+              startResizeAnnotation(e, anno, dir);
+            });
+            el.appendChild(handle);
+          });
+        }
+
+        layer.appendChild(el);
+      });
+
+      renderAnnoLayerList();
+    }
+
+    function startDragAnnotation(startEvent, anno) {
+      const z = state.zoom;
+      const startX = startEvent.clientX;
+      const startY = startEvent.clientY;
+      const origX = anno.x;
+      const origY = anno.y;
+      const origPoints = anno.points ? anno.points.map(p => ({ ...p })) : null;
+      let moved = false;
+
+      function onMove(e) {
+        const dx = (e.clientX - startX) / z;
+        const dy = (e.clientY - startY) / z;
+        if (Math.abs(dx) > 1 || Math.abs(dy) > 1) moved = true;
+        anno.x = Math.round(origX + dx);
+        anno.y = Math.round(origY + dy);
+        if (origPoints) {
+          anno.points = origPoints.map(p => ({ x: p.x + dx, y: p.y + dy }));
+        }
+        renderAnnotationLayer();
+      }
+
+      function onUp() {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        if (moved) {
+          pushHistory();
+          renderThumbnails();
+        }
+      }
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
+    function startResizeAnnotation(startEvent, anno, dir) {
+      const z = state.zoom;
+      const startX = startEvent.clientX;
+      const startY = startEvent.clientY;
+      const orig = { x: anno.x, y: anno.y, w: anno.w, h: anno.h };
+
+      function onMove(e) {
+        const dx = (e.clientX - startX) / z;
+        const dy = (e.clientY - startY) / z;
+        if (dir.includes('e')) anno.w = Math.max(24, Math.round(orig.w + dx));
+        if (dir.includes('s')) anno.h = Math.max(20, Math.round(orig.h + dy));
+        if (dir.includes('w')) {
+          const nw = Math.max(24, Math.round(orig.w - dx));
+          anno.x = Math.round(orig.x + (orig.w - nw));
+          anno.w = nw;
+        }
+        if (dir.includes('n')) {
+          const nh = Math.max(20, Math.round(orig.h - dy));
+          anno.y = Math.round(orig.y + (orig.h - nh));
+          anno.h = nh;
+        }
+        renderAnnotationLayer();
+      }
+
+      function onUp() {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        pushHistory();
+        renderThumbnails();
+      }
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+
+    function setupCanvasCreationHandlers() {
+      const layer = document.getElementById('annotationLayer');
+
+      layer.addEventListener('mousedown', (e) => {
+        if (e.target !== layer) return;
+        const pageObj = state.pages[state.currentPageIndex];
+        if (!pageObj) return;
+
+        const rect = layer.getBoundingClientRect();
+        const z = state.zoom;
+        const clickX = Math.round((e.clientX - rect.left) / z);
+        const clickY = Math.round((e.clientY - rect.top) / z);
+
+        if (state.activeTool === 'select') {
+          state.selectedAnnoId = null;
+          renderAnnotationLayer();
+          renderInspector();
+          return;
+        }
+
+        if (state.activeTool === 'text') {
+          const newAnno = {
+            id: nextId('anno'),
+            type: 'text',
+            x: Math.max(10, clickX - 70),
+            y: Math.max(10, clickY - 18),
+            w: 190,
+            h: 42,
+            text: '새 텍스트 입력',
+            fontSize: 16,
+            bold: true,
+            strokeColor: '#0f172a',
+            fillColor: '#fef9c3',
+            fillEnabled: true,
+            strokeWidth: 1,
+            opacity: 100
+          };
+          pageObj.annotations.push(newAnno);
+          state.selectedAnnoId = newAnno.id;
+          setActiveTool('select');
+          pushHistory();
+          renderAnnotationLayer();
+          renderInspector();
+          renderThumbnails();
+          const input = document.getElementById('propTextValue');
+          if (input) {
+            input.focus();
+            input.select();
+          }
+          return;
+        }
+
+        if (state.activeTool === 'pen') {
+          const newAnno = {
+            id: nextId('anno'),
+            type: 'pen',
+            x: clickX,
+            y: clickY,
+            w: 20,
+            h: 20,
+            points: [{ x: clickX, y: clickY }],
+            strokeColor: '#0f172a',
+            strokeWidth: 3,
+            opacity: 100
+          };
+          pageObj.annotations.push(newAnno);
+          state.selectedAnnoId = newAnno.id;
+
+          function onMove(ev) {
+            const px = Math.round((ev.clientX - rect.left) / z);
+            const py = Math.round((ev.clientY - rect.top) / z);
+            newAnno.points.push({ x: px, y: py });
+            const xs = newAnno.points.map(p => p.x);
+            const ys = newAnno.points.map(p => p.y);
+            newAnno.x = Math.min(...xs);
+            newAnno.y = Math.min(...ys);
+            newAnno.w = Math.max(20, Math.max(...xs) - newAnno.x);
+            newAnno.h = Math.max(20, Math.max(...ys) - newAnno.y);
+            renderAnnotationLayer();
+          }
+
+          function onUp() {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            setActiveTool('select');
+            pushHistory();
+            renderInspector();
+            renderThumbnails();
+          }
+
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+          return;
+        }
+
+        if (['rect', 'ellipse', 'arrow', 'highlight', 'whiteout'].includes(state.activeTool)) {
+          const tool = state.activeTool;
+          const defaultColors = {
+            rect: { stroke: '#2563eb', fill: '#dbeafe', fillEnabled: false },
+            ellipse: { stroke: '#7c3aed', fill: '#f3e8ff', fillEnabled: false },
+            arrow: { stroke: '#e11d48', fill: '#ffe4e6', fillEnabled: false },
+            highlight: { stroke: '#facc15', fill: '#fde047', fillEnabled: true },
+            whiteout: { stroke: '#ffffff', fill: '#ffffff', fillEnabled: true }
+          }[tool];
+
+          const newAnno = {
+            id: nextId('anno'),
+            type: tool,
+            x: clickX,
+            y: clickY,
+            w: 120,
+            h: (tool === 'highlight' || tool === 'whiteout') ? 30 : 70,
+            strokeColor: defaultColors.stroke,
+            fillColor: defaultColors.fill,
+            fillEnabled: defaultColors.fillEnabled,
+            strokeWidth: (tool === 'highlight' || tool === 'whiteout') ? 0 : 3,
+            opacity: tool === 'highlight' ? 45 : 100
+          };
+          pageObj.annotations.push(newAnno);
+          state.selectedAnnoId = newAnno.id;
+
+          function onMove(ev) {
+            const curX = Math.round((ev.clientX - rect.left) / z);
+            const curY = Math.round((ev.clientY - rect.top) / z);
+            newAnno.x = Math.min(clickX, curX);
+            newAnno.y = Math.min(clickY, curY);
+            newAnno.w = Math.max(24, Math.abs(curX - clickX));
+            newAnno.h = Math.max(20, Math.abs(curY - clickY));
+            renderAnnotationLayer();
+          }
+
+          function onUp() {
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            setActiveTool('select');
+            pushHistory();
+            renderAnnotationLayer();
+            renderInspector();
+            renderThumbnails();
+          }
+
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        }
+      });
+    }
+
+    function setActiveTool(toolName) {
+      state.activeTool = toolName;
+      document.querySelectorAll('.tool-btn').forEach((btn) => {
+        const isMatch = btn.dataset.tool === toolName;
+        btn.className = isMatch
+          ? 'tool-btn active px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 bg-blue-50 text-blue-700 border border-blue-200 transition'
+          : 'tool-btn px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 text-slate-700 hover:bg-slate-100 border border-transparent transition';
+      });
+
+      const hints = {
+        select: '요소를 클릭해 이동·크기 조절하거나 우측 패널에서 색상·투명도·글자 크기를 변경하세요.',
+        text: '페이지 위 원하는 위치를 클릭하면 새 텍스트 상자가 추가됩니다.',
+        rect: '페이지 위에서 마우스를 드래그하여 사각형을 그리세요.',
+        ellipse: '페이지 위에서 마우스를 드래그하여 원/타원을 그리세요.',
+        arrow: '페이지 위에서 마우스를 드래그하여 화살표/지시선을 그리세요.',
+        highlight: '강조할 문구 위를 드래그하여 형광펜 하이라이트를 칠하세요.',
+        whiteout: '가리고 싶은 기존 글자나 영역 위를 드래그하면 흰색 가림막 박스가 덮입니다.',
+        pen: '페이지 위에서 마우스를 드래그하여 자유롭게 필기하거나 서명하세요.'
+      };
+      document.getElementById('toolHintText').textContent = hints[toolName] || hints.select;
+      renderAnnotationLayer();
+    }
+
+    function getSelectedAnno() {
+      const pageObj = state.pages[state.currentPageIndex];
+      if (!pageObj || !state.selectedAnnoId) return null;
+      return pageObj.annotations.find(a => a.id === state.selectedAnnoId) || null;
+    }
+
+    function renderInspector() {
+      const anno = getSelectedAnno();
+      const emptyState = document.getElementById('inspectorEmptyState');
+      const form = document.getElementById('inspectorForm');
+      const badge = document.getElementById('selectedTypeBadge');
+
+      if (!anno) {
+        emptyState.classList.remove('hidden');
+        form.classList.add('hidden');
+        badge.textContent = '선택 없음';
+        return;
+      }
+
+      emptyState.classList.add('hidden');
+      form.classList.remove('hidden');
+
+      const typeNames = {
+        text: '텍스트 상자',
+        stamp: '스탬프/도장',
+        image: '이미지',
+        rect: '사각형 도형',
+        ellipse: '원형 도형',
+        arrow: '화살표/선',
+        highlight: '형광펜',
+        whiteout: '화이트아웃(가림)',
+        pen: '자유 펜'
+      };
+      badge.textContent = typeNames[anno.type] || '요소';
+
+      const textGroup = document.getElementById('textPropsGroup');
+      if (anno.type === 'text' || anno.type === 'stamp') {
+        textGroup.classList.remove('hidden');
+        document.getElementById('propTextValue').value = anno.text || '';
+        document.getElementById('propFontSize').value = anno.fontSize || 16;
+        document.getElementById('propFontBold').className = anno.bold
+          ? 'flex-1 py-1.5 rounded-lg border border-blue-500 bg-blue-50 text-blue-700 text-xs font-bold transition'
+          : 'flex-1 py-1.5 rounded-lg border border-slate-200 text-xs font-bold hover:bg-slate-100 transition';
+        document.getElementById('propBgToggle').className = anno.fillEnabled
+          ? 'flex-1 py-1.5 rounded-lg border border-blue-500 bg-blue-50 text-blue-700 text-[11px] font-semibold transition'
+          : 'flex-1 py-1.5 rounded-lg border border-slate-200 text-[11px] font-medium hover:bg-slate-100 transition';
+      } else {
+        textGroup.classList.add('hidden');
+      }
+
+      const strokeColor = anno.strokeColor || '#1d4ed8';
+      document.getElementById('propStrokeColor').value = strokeColor;
+      document.getElementById('propStrokeColorHex').textContent = strokeColor.toUpperCase();
+
+      const fillColor = anno.fillColor || '#dbeafe';
+      document.getElementById('propFillColor').value = fillColor;
+      document.getElementById('propFillEnabled').checked = !!anno.fillEnabled;
+
+      document.getElementById('propStrokeWidth').value = anno.strokeWidth ?? 3;
+      const op = anno.opacity ?? 100;
+      document.getElementById('propOpacity').value = op;
+      document.getElementById('propOpacityLabel').textContent = `${op}%`;
+    }
+
+    function renderAnnoLayerList() {
+      const listEl = document.getElementById('annoLayerList');
+      const countBadge = document.getElementById('annoCountBadge');
+      const pageObj = state.pages[state.currentPageIndex];
+      listEl.innerHTML = '';
+
+      if (!pageObj || pageObj.annotations.length === 0) {
+        countBadge.textContent = '0개';
+        listEl.innerHTML = `<p class="text-[11px] text-slate-400 text-center py-4">이 페이지에 추가된 오버레이 요소가 없습니다.</p>`;
+        return;
+      }
+
+      countBadge.textContent = `${pageObj.annotations.length}개`;
+      const typeIcons = {
+        text: 'type',
+        stamp: 'stamp',
+        image: 'image',
+        rect: 'square',
+        ellipse: 'circle',
+        arrow: 'move-up-right',
+        highlight: 'highlighter',
+        whiteout: 'eraser',
+        pen: 'pen-tool'
+      };
+
+      pageObj.annotations.slice().reverse().forEach((anno) => {
+        const row = document.createElement('div');
+        const isSel = anno.id === state.selectedAnnoId;
+        row.className = `px-2.5 py-1.5 rounded-lg border text-xs flex items-center justify-between cursor-pointer transition ${
+          isSel ? 'bg-blue-50 border-blue-300 text-blue-800 font-semibold' : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-700'
+        }`;
+        const label = anno.text
+          ? anno.text.slice(0, 18)
+          : anno.type === 'image'
+          ? '업로드 이미지'
+          : anno.type === 'rect'
+          ? '사각형 도형'
+          : anno.type === 'ellipse'
+          ? '원형 도형'
+          : anno.type === 'arrow'
+          ? '화살표 지시선'
+          : anno.type === 'highlight'
+          ? '형광펜 영역'
+          : anno.type === 'whiteout'
+          ? '화이트아웃 가림막'
+          : '자유 펜 드로잉';
+
+        row.innerHTML = `
+          <div class="flex items-center gap-2 truncate">
+            <i data-lucide="${typeIcons[anno.type] || 'box'}" class="w-3.5 h-3.5 shrink-0 text-slate-500"></i>
+            <span class="truncate">${label}</span>
+          </div>
+          <button class="del-layer-btn p-1 rounded hover:bg-rose-100 text-slate-400 hover:text-rose-600" title="삭제">
+            <i data-lucide="x" class="w-3 h-3"></i>
+          </button>
+        `;
+
+        row.addEventListener('click', () => {
+          state.selectedAnnoId = anno.id;
+          renderAnnotationLayer();
+          renderInspector();
+        });
+
+        row.querySelector('.del-layer-btn').addEventListener('click', (e) => {
+          e.stopPropagation();
+          pageObj.annotations = pageObj.annotations.filter(a => a.id !== anno.id);
+          if (state.selectedAnnoId === anno.id) state.selectedAnnoId = null;
+          pushHistory();
+          renderAnnotationLayer();
+          renderInspector();
+          renderThumbnails();
+        });
+
+        listEl.appendChild(row);
+      });
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    // Draw annotations onto a 2D canvas context for thumbnails, printing, and final PDF export
+    async function drawAnnotationsToCanvasCtx(ctx, pageObj, scaleFactor) {
+      for (const anno of pageObj.annotations) {
+        ctx.save();
+        ctx.globalAlpha = (anno.opacity ?? 100) / 100;
+        const x = anno.x * scaleFactor;
+        const y = anno.y * scaleFactor;
+        const w = anno.w * scaleFactor;
+        const h = anno.h * scaleFactor;
+
+        if (anno.type === 'text' || anno.type === 'stamp') {
+          if (anno.fillEnabled) {
+            ctx.fillStyle = anno.fillColor || '#eff6ff';
+            ctx.beginPath();
+            ctx.roundRect(x, y, w, h, (anno.type === 'stamp' ? 8 : 4) * scaleFactor);
+            ctx.fill();
+          }
+          if (anno.type === 'stamp' || (anno.strokeWidth && anno.strokeWidth > 0 && anno.fillEnabled)) {
+            ctx.strokeStyle = anno.strokeColor || '#1d4ed8';
+            ctx.lineWidth = Math.max(1, (anno.strokeWidth || 2) * scaleFactor);
+            ctx.beginPath();
+            ctx.roundRect(x, y, w, h, (anno.type === 'stamp' ? 8 : 4) * scaleFactor);
+            ctx.stroke();
+          }
+          ctx.fillStyle = anno.strokeColor || '#0f172a';
+          const fontSizePx = (anno.fontSize || 16) * scaleFactor;
+          ctx.font = `${anno.bold ? 'bold' : '500'} ${fontSizePx}px "Noto Sans KR", "Inter", sans-serif`;
+          ctx.textBaseline = 'middle';
+          const lines = String(anno.text || '').split('\n');
+          const lineHeight = fontSizePx * 1.28;
+          const totalTextH = lines.length * lineHeight;
+          let startY = y + (h - totalTextH) / 2 + lineHeight / 2;
+          lines.forEach((line) => {
+            if (anno.type === 'stamp') {
+              const tw = ctx.measureText(line).width;
+              ctx.fillText(line, x + Math.max(6 * scaleFactor, (w - tw) / 2), startY);
+            } else {
+              ctx.fillText(line, x + 8 * scaleFactor, startY);
+            }
+            startY += lineHeight;
+          });
+        } else if (anno.type === 'image' && anno.src) {
+          await new Promise((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              ctx.drawImage(img, x, y, w, h);
+              resolve();
+            };
+            img.onerror = () => resolve();
+            img.src = anno.src;
+          });
+        } else if (anno.type === 'rect' || anno.type === 'highlight' || anno.type === 'whiteout') {
+          if (anno.type === 'highlight') {
+            ctx.fillStyle = anno.fillColor || '#fde047';
+            ctx.fillRect(x, y, w, h);
+          } else if (anno.type === 'whiteout') {
+            ctx.fillStyle = anno.fillColor || '#ffffff';
+            ctx.fillRect(x, y, w, h);
+          } else {
+            if (anno.fillEnabled) {
+              ctx.fillStyle = anno.fillColor || '#dbeafe';
+              ctx.fillRect(x, y, w, h);
+            }
+            ctx.strokeStyle = anno.strokeColor || '#2563eb';
+            ctx.lineWidth = Math.max(1, (anno.strokeWidth || 3) * scaleFactor);
+            ctx.strokeRect(x, y, w, h);
+          }
+        } else if (anno.type === 'ellipse') {
+          ctx.beginPath();
+          ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+          if (anno.fillEnabled) {
+            ctx.fillStyle = anno.fillColor || '#f3e8ff';
+            ctx.fill();
+          }
+          ctx.strokeStyle = anno.strokeColor || '#7c3aed';
+          ctx.lineWidth = Math.max(1, (anno.strokeWidth || 3) * scaleFactor);
+          ctx.stroke();
+        } else if (anno.type === 'arrow') {
+          const x1 = x + 4 * scaleFactor;
+          const y1 = y + h - 4 * scaleFactor;
+          const x2 = x + w - 6 * scaleFactor;
+          const y2 = y + 6 * scaleFactor;
+          ctx.strokeStyle = anno.strokeColor || '#e11d48';
+          ctx.fillStyle = anno.strokeColor || '#e11d48';
+          ctx.lineWidth = Math.max(2, (anno.strokeWidth || 3) * scaleFactor);
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+
+          const angle = Math.atan2(y2 - y1, x2 - x1);
+          const headLen = 10 * scaleFactor;
+          ctx.beginPath();
+          ctx.moveTo(x2, y2);
+          ctx.lineTo(x2 - headLen * Math.cos(angle - Math.PI / 6), y2 - headLen * Math.sin(angle - Math.PI / 6));
+          ctx.lineTo(x2 - headLen * Math.cos(angle + Math.PI / 6), y2 - headLen * Math.sin(angle + Math.PI / 6));
+          ctx.closePath();
+          ctx.fill();
+        } else if (anno.type === 'pen' && Array.isArray(anno.points) && anno.points.length > 0) {
+          ctx.strokeStyle = anno.strokeColor || '#0f172a';
+          ctx.lineWidth = Math.max(1.5, (anno.strokeWidth || 3) * scaleFactor);
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          ctx.beginPath();
+          anno.points.forEach((pt, idx) => {
+            if (idx === 0) ctx.moveTo(pt.x * scaleFactor, pt.y * scaleFactor);
+            else ctx.lineTo(pt.x * scaleFactor, pt.y * scaleFactor);
+          });
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+    }
+
+    // Left Sidebar Thumbnails with Drag-and-Drop, Swap, Move, Delete
+    async function renderThumbnails() {
+      const list = document.getElementById('thumbnailList');
+      list.innerHTML = '';
+
+      for (let idx = 0; idx < state.pages.length; idx++) {
+        const pageObj = state.pages[idx];
+        const isCurrent = idx === state.currentPageIndex;
+
+        const card = document.createElement('div');
+        card.className = `thumb-card group rounded-xl border p-2.5 transition cursor-pointer select-none ${
+          isCurrent
+            ? 'bg-blue-50/90 border-blue-500 shadow-xs'
+            : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/60'
+        }`;
+        card.draggable = true;
+        card.dataset.index = idx;
+
+        card.innerHTML = `
+          <div class="flex items-center justify-between mb-1.5">
+            <div class="flex items-center gap-1.5">
+              <span class="px-2 py-0.5 rounded-md text-[11px] font-bold ${
+                isCurrent ? 'bg-blue-600 text-white' : 'bg-slate-200 text-slate-700'
+              }">${idx + 1}P</span>
+              <span class="text-[11px] font-medium text-slate-500 truncate max-w-[95px]">${pageObj.originLabel}</span>
+            </div>
+            <div class="flex items-center gap-0.5">
+              <button class="thumb-up p-1 rounded hover:bg-slate-200 text-slate-600 disabled:opacity-30" title="위로 이동 (앞 페이지와 교환)" ${idx === 0 ? 'disabled' : ''}>
+                <i data-lucide="chevron-up" class="w-3.5 h-3.5"></i>
+              </button>
+              <button class="thumb-down p-1 rounded hover:bg-slate-200 text-slate-600 disabled:opacity-30" title="아래로 이동 (다음 페이지와 교환)" ${idx === state.pages.length - 1 ? 'disabled' : ''}>
+                <i data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
+              </button>
+              <button class="thumb-del p-1 rounded hover:bg-rose-100 text-slate-500 hover:text-rose-600 disabled:opacity-30" title="이 페이지 삭제" ${state.pages.length <= 1 ? 'disabled' : ''}>
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+          <div class="relative mx-auto bg-white border border-slate-200 rounded-lg overflow-hidden shadow-2xs flex items-center justify-center" style="width: 140px; min-height: 180px;">
+            <canvas class="thumb-canvas block"></canvas>
+            ${
+              pageObj.annotations.length > 0
+                ? `<span class="absolute bottom-1.5 right-1.5 bg-blue-600/90 text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-md shadow">편집 ${pageObj.annotations.length}</span>`
+                : ''
+            }
+          </div>
+        `;
+
+        card.addEventListener('click', () => {
+          if (state.currentPageIndex !== idx) {
+            state.currentPageIndex = idx;
+            state.selectedAnnoId = null;
+            renderAll();
+          }
+        });
+
+        card.querySelector('.thumb-up').addEventListener('click', (e) => {
+          e.stopPropagation();
+          swapPages(idx, idx - 1);
+        });
+
+        card.querySelector('.thumb-down').addEventListener('click', (e) => {
+          e.stopPropagation();
+          swapPages(idx, idx + 1);
+        });
+
+        card.querySelector('.thumb-del').addEventListener('click', (e) => {
+          e.stopPropagation();
+          deletePageAt(idx);
+        });
+
+        card.addEventListener('dragstart', (e) => {
+          state.dragThumbIndex = idx;
+          card.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'move';
+        });
+        card.addEventListener('dragend', () => {
+          card.classList.remove('dragging');
+          document.querySelectorAll('.thumb-card').forEach(c => c.classList.remove('drag-over'));
+        });
+        card.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          card.classList.add('drag-over');
+        });
+        card.addEventListener('dragleave', () => {
+          card.classList.remove('drag-over');
+        });
+        card.addEventListener('drop', (e) => {
+          e.preventDefault();
+          card.classList.remove('drag-over');
+          const fromIdx = state.dragThumbIndex;
+          const toIdx = idx;
+          if (fromIdx !== null && fromIdx !== toIdx) {
+            movePageFromTo(fromIdx, toIdx);
+          }
+          state.dragThumbIndex = null;
+        });
+
+        list.appendChild(card);
+
+        const thumbCanvas = card.querySelector('.thumb-canvas');
+        await renderPageToCanvas(pageObj, thumbCanvas, 138);
+        const rot = ((pageObj.rotation % 360) + 360) % 360;
+        const baseW = (rot === 90 || rot === 270) ? pageObj.height : pageObj.width;
+        const scaleFactor = thumbCanvas.width / baseW;
+        await drawAnnotationsToCanvasCtx(thumbCanvas.getContext('2d'), pageObj, scaleFactor);
+      }
+
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    // Page Manipulation Operations
+    function swapPages(idxA, idxB) {
+      if (idxA < 0 || idxB < 0 || idxA >= state.pages.length || idxB >= state.pages.length) return;
+      if (idxA === idxB) {
+        showToast('서로 다른 두 페이지를 선택해 주세요.', 'warn');
+        return;
+      }
+      const temp = state.pages[idxA];
+      state.pages[idxA] = state.pages[idxB];
+      state.pages[idxB] = temp;
+      state.currentPageIndex = idxB;
+      state.selectedAnnoId = null;
+      pushHistory();
+      showToast(`${idxA + 1}페이지와 ${idxB + 1}페이지의 위치가 서로 바뀌었습니다.`, 'success');
+      renderAll();
+    }
+
+    function movePageFromTo(fromIdx, toIdx) {
+      if (fromIdx === toIdx) return;
+      const [moved] = state.pages.splice(fromIdx, 1);
+      state.pages.splice(toIdx, 0, moved);
+      state.currentPageIndex = toIdx;
+      state.selectedAnnoId = null;
+      pushHistory();
+      showToast(`${fromIdx + 1}페이지를 ${toIdx + 1}페이지 위치로 이동했습니다.`, 'success');
+      renderAll();
+    }
+
+    function deletePageAt(idx) {
+      if (state.pages.length <= 1) {
+        showToast('문서에는 최소 1개의 페이지가 남아 있어야 합니다.', 'warn');
+        return;
+      }
+      const removed = state.pages[idx];
+      state.pages.splice(idx, 1);
+      if (state.currentPageIndex >= state.pages.length) {
+        state.currentPageIndex = state.pages.length - 1;
+      }
+      state.selectedAnnoId = null;
+      pushHistory();
+      showToast(`${idx + 1}페이지(${removed.originLabel})가 삭제되었습니다. (Ctrl+Z로 복구 가능)`, 'info');
+      renderAll();
+    }
+
+    function addBlankPageAt(insertIndex) {
+      const refPage = state.pages[state.currentPageIndex] || { width: 595.28, height: 841.89 };
+      const blankPage = {
+        id: nextId('page'),
+        sourceId: null,
+        sourcePageIndex: 0,
+        originLabel: '새 빈 페이지',
+        width: refPage.width,
+        height: refPage.height,
+        rotation: 0,
+        annotations: []
+      };
+      state.pages.splice(insertIndex, 0, blankPage);
+      state.currentPageIndex = insertIndex;
+      state.selectedAnnoId = null;
+      pushHistory();
+      showToast(`${insertIndex + 1}페이지 위치에 새 빈 페이지가 추가되었습니다.`, 'success');
+      renderAll();
+    }
+
+    // Full-Screen Organizer Grid View
+    async function renderOrganizerGrid() {
+      const grid = document.getElementById('organizerGrid');
+      grid.innerHTML = '';
+
+      for (let idx = 0; idx < state.pages.length; idx++) {
+        const pageObj = state.pages[idx];
+        const isChecked = state.organizerSelectedIds.has(pageObj.id);
+
+        const card = document.createElement('div');
+        card.className = `bg-white rounded-2xl border-2 p-3.5 shadow-xs flex flex-col justify-between transition ${
+          isChecked ? 'border-blue-600 ring-2 ring-blue-500/20' : 'border-slate-200 hover:border-slate-300'
+        }`;
+
+        card.innerHTML = `
+          <div class="flex items-center justify-between mb-2">
+            <label class="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" class="org-check w-4 h-4 rounded text-blue-600" ${isChecked ? 'checked' : ''} />
+              <span class="text-xs font-bold text-slate-800">${idx + 1}페이지</span>
+              <span class="text-[11px] text-slate-500">(${pageObj.originLabel})</span>
+            </label>
+            <div class="flex items-center gap-1">
+              <button class="org-left p-1 rounded hover:bg-slate-100 text-slate-600 disabled:opacity-30" title="앞으로 이동" ${idx === 0 ? 'disabled' : ''}>
+                <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+              </button>
+              <button class="org-right p-1 rounded hover:bg-slate-100 text-slate-600 disabled:opacity-30" title="뒤로 이동" ${idx === state.pages.length - 1 ? 'disabled' : ''}>
+                <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+              </button>
+              <button class="org-rot p-1 rounded hover:bg-slate-100 text-slate-600" title="90° 회전">
+                <i data-lucide="rotate-cw" class="w-3.5 h-3.5"></i>
+              </button>
+              <button class="org-del p-1 rounded hover:bg-rose-50 text-rose-600 disabled:opacity-30" title="삭제" ${state.pages.length <= 1 ? 'disabled' : ''}>
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+          <div class="mx-auto my-1 bg-slate-50 border border-slate-200 rounded-xl overflow-hidden flex items-center justify-center p-1">
+            <canvas class="org-canvas block"></canvas>
+          </div>
+          <div class="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-1.5">
+            <button class="org-edit flex-1 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-xs font-semibold text-slate-700 transition">이 페이지 편집</button>
+            <button class="org-insert-after px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold transition" title="이 페이지 뒤에 PDF 삽입">+ 뒤에 PDF 삽입</button>
+          </div>
+        `;
+
+        card.querySelector('.org-check').addEventListener('change', (e) => {
+          if (e.target.checked) state.organizerSelectedIds.add(pageObj.id);
+          else state.organizerSelectedIds.delete(pageObj.id);
+          updateOrganizerToolbarButtons();
+          renderOrganizerGrid();
+        });
+
+        card.querySelector('.org-left').addEventListener('click', () => swapPages(idx, idx - 1));
+        card.querySelector('.org-right').addEventListener('click', () => swapPages(idx, idx + 1));
+        card.querySelector('.org-rot').addEventListener('click', () => {
+          pageObj.rotation = (pageObj.rotation + 90) % 360;
+          pushHistory();
+          renderAll();
+        });
+        card.querySelector('.org-del').addEventListener('click', () => {
+          state.organizerSelectedIds.delete(pageObj.id);
+          deletePageAt(idx);
+        });
+        card.querySelector('.org-edit').addEventListener('click', () => {
+          state.currentPageIndex = idx;
+          toggleOrganizerView(false);
+          renderAll();
+        });
+        card.querySelector('.org-insert-after').addEventListener('click', () => {
+          openInsertPdfModal(idx + 1);
+        });
+
+        grid.appendChild(card);
+
+        const c = card.querySelector('.org-canvas');
+        await renderPageToCanvas(pageObj, c, 175);
+        const rot = ((pageObj.rotation % 360) + 360) % 360;
+        const baseW = (rot === 90 || rot === 270) ? pageObj.height : pageObj.width;
+        await drawAnnotationsToCanvasCtx(c.getContext('2d'), pageObj, c.width / baseW);
+      }
+
+      updateOrganizerToolbarButtons();
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    function updateOrganizerToolbarButtons() {
+      const count = state.organizerSelectedIds.size;
+      document.getElementById('btnOrganizerSwapSelected').disabled = count !== 2;
+      document.getElementById('btnOrganizerDeleteSelected').disabled = count === 0 || count >= state.pages.length;
+    }
+
+    function toggleOrganizerView(forceState) {
+      state.organizerOpen = typeof forceState === 'boolean' ? forceState : !state.organizerOpen;
+      const view = document.getElementById('organizerView');
+      const label = document.getElementById('organizerToggleLabel');
+      if (state.organizerOpen) {
+        view.classList.remove('hidden');
+        view.classList.add('flex');
+        label.textContent = '뷰어로 돌아가기';
+        renderOrganizerGrid();
+      } else {
+        view.classList.add('hidden');
+        view.classList.remove('flex');
+        label.textContent = '페이지 전체 관리';
+      }
+    }
+
+    // Insert / Merge Another PDF Modal Logic
+    function openInsertPdfModal(preferredInsertIndex = null) {
+      const modal = document.getElementById('insertPdfModal');
+      const select = document.getElementById('insertTargetPositionSelect');
+      select.innerHTML = '';
+
+      const total = state.pages.length;
+      const defaultIdx = preferredInsertIndex !== null ? preferredInsertIndex : state.currentPageIndex + 1;
+
+      const optStart = document.createElement('option');
+      optStart.value = '0';
+      optStart.textContent = '맨 앞 (1페이지 앞)에 삽입';
+      select.appendChild(optStart);
+
+      for (let i = 1; i <= total; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = `${i}페이지 뒤 (${i + 1}번째 페이지 위치)에 삽입`;
+        select.appendChild(opt);
+      }
+
+      select.value = String(Math.min(total, Math.max(0, defaultIdx)));
+      updateInsertModalFileDisplay();
+      modal.classList.remove('hidden');
+    }
+
+    function updateInsertModalFileDisplay() {
+      const src = state.pendingInsertSource;
+      if (!src) {
+        document.getElementById('selectedInsertFileName').textContent = '선택된 파일 없음';
+        document.getElementById('selectedInsertPageCount').textContent = '-';
+        return;
+      }
+      document.getElementById('selectedInsertFileName').textContent = `선택된 파일: ${src.name}`;
+      document.getElementById('selectedInsertPageCount').textContent = `총 ${src.numPages}P`;
+    }
+
+    function parsePageRange(rangeStr, maxPages) {
+      const clean = (rangeStr || '').trim().toLowerCase();
+      if (!clean || clean === 'all' || clean === '전체') {
+        return Array.from({ length: maxPages }, (_, i) => i);
+      }
+      const indices = [];
+      const parts = clean.split(',');
+      for (const part of parts) {
+        const p = part.trim();
+        if (!p) continue;
+        if (p.includes('-')) {
+          const [s, e] = p.split('-').map(n => parseInt(n.trim(), 10));
+          if (!isNaN(s) && !isNaN(e)) {
+            const start = Math.max(1, Math.min(s, e));
+            const end = Math.min(maxPages, Math.max(s, e));
+            for (let k = start; k <= end; k++) indices.push(k - 1);
+          }
+        } else {
+          const num = parseInt(p, 10);
+          if (!isNaN(num) && num >= 1 && num <= maxPages) {
+            indices.push(num - 1);
+          }
+        }
+      }
+      return indices.length > 0 ? indices : Array.from({ length: maxPages }, (_, i) => i);
+    }
+
+    // Direct Print Functionality (Immediately prepares all pages and opens native printer dialog)
+    async function executePrintDocument() {
+      if (state.pages.length === 0) return;
+      showToast('프린터 인쇄 창을 준비하고 있습니다...', 'info');
+
+      const printContainer = document.getElementById('printContainer');
+      printContainer.innerHTML = '';
+
+      for (const pageObj of state.pages) {
+        const rot = ((pageObj.rotation % 360) + 360) % 360;
+        const isSwappedDim = rot === 90 || rot === 270;
+        const baseW = isSwappedDim ? pageObj.height : pageObj.width;
+
+        const tempCanvas = document.createElement('canvas');
+        await renderPageToCanvas(pageObj, tempCanvas, baseW * 1.6);
+        const scaleFactor = tempCanvas.width / baseW;
+        await drawAnnotationsToCanvasCtx(tempCanvas.getContext('2d'), pageObj, scaleFactor);
+
+        const sheet = document.createElement('div');
+        sheet.className = 'print-page-sheet';
+        const img = document.createElement('img');
+        img.src = tempCanvas.toDataURL('image/png');
+        sheet.appendChild(img);
+        printContainer.appendChild(sheet);
+      }
+
+      setTimeout(() => {
+        window.print();
+      }, 150);
+    }
+
+    // Export Final Edited PDF via pdf-lib
+    async function exportEditedPdf() {
+      if (state.pages.length === 0) return;
+      try {
+        showToast('편집된 PDF 파일을 생성하고 있습니다...', 'info');
+        const { PDFDocument, degrees } = window.PDFLib;
+        const outDoc = await PDFDocument.create();
+
+        const loadedLibDocs = {};
+        for (const [srcId, srcObj] of Object.entries(state.pdfSources)) {
+          loadedLibDocs[srcId] = await PDFDocument.load(srcObj.bytes);
+        }
+
+        for (let i = 0; i < state.pages.length; i++) {
+          const pageObj = state.pages[i];
+          let outPage;
+
+          if (pageObj.sourceId && loadedLibDocs[pageObj.sourceId]) {
+            const [copiedPage] = await outDoc.copyPages(loadedLibDocs[pageObj.sourceId], [pageObj.sourcePageIndex]);
+            outPage = outDoc.addPage(copiedPage);
+            const currentRot = outPage.getRotation().angle || 0;
+            outPage.setRotation(degrees((currentRot + pageObj.rotation) % 360));
+          } else {
+            outPage = outDoc.addPage([pageObj.width, pageObj.height]);
+            if (pageObj.rotation) outPage.setRotation(degrees(pageObj.rotation % 360));
+          }
+
+          if (pageObj.annotations && pageObj.annotations.length > 0) {
+            const rot = ((pageObj.rotation % 360) + 360) % 360;
+            const isSwappedDim = rot === 90 || rot === 270;
+            const baseW = isSwappedDim ? pageObj.height : pageObj.width;
+            const baseH = isSwappedDim ? pageObj.width : pageObj.height;
+            const exportScale = 2;
+
+            const offCanvas = document.createElement('canvas');
+            offCanvas.width = Math.round(baseW * exportScale);
+            offCanvas.height = Math.round(baseH * exportScale);
+            const offCtx = offCanvas.getContext('2d');
+
+            await drawAnnotationsToCanvasCtx(offCtx, pageObj, exportScale);
+
+            const dataUrl = offCanvas.toDataURL('image/png');
+            const base64 = dataUrl.split(',')[1];
+            const bin = atob(base64);
+            const pngBytes = new Uint8Array(bin.length);
+            for (let k = 0; k < bin.length; k++) pngBytes[k] = bin.charCodeAt(k);
+
+            const embeddedOverlay = await outDoc.embedPng(pngBytes);
+            const { width: pw, height: ph } = outPage.getSize();
+            outPage.drawImage(embeddedOverlay, {
+              x: 0,
+              y: 0,
+              width: pw,
+              height: ph
+            });
+          }
+        }
+
+        const pdfBytes = await outDoc.save();
+        const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const baseName = (state.docName || '문서').replace(/\.pdf$/i, '');
+        a.href = url;
+        a.download = `${baseName}_편집본.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+        showToast('편집된 PDF 파일이 저장되었습니다!', 'success');
+      } catch (err) {
+        console.error(err);
+        showToast('PDF 내보내기 중 오류가 발생했습니다.', 'warn');
+      }
+    }
+
+    // Bind UI Event Listeners
+    function bindEvents() {
+      // Tool buttons
+      document.querySelectorAll('.tool-btn').forEach((btn) => {
+        btn.addEventListener('click', () => setActiveTool(btn.dataset.tool));
+      });
+
+      // Open main PDF (Header button & Initial Upload Screen button)
+      document.getElementById('btnOpenPdf').addEventListener('click', () => {
+        document.getElementById('openPdfInput').click();
+      });
+      document.getElementById('btnInitialUploadPdf').addEventListener('click', () => {
+        document.getElementById('openPdfInput').click();
+      });
+      document.getElementById('btnStartWithBlankPdf').addEventListener('click', startWithBlankDocument);
+
+      document.getElementById('openPdfInput').addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const buf = await file.arrayBuffer();
+        await loadMainPdfBytes(new Uint8Array(buf), file.name);
+        showToast(`'${file.name}' 문서를 불러왔습니다.`, 'success');
+        e.target.value = '';
+      });
+
+      // Drag & Drop PDF on Initial Upload Screen
+      const dropzoneCard = document.getElementById('dropzoneCard');
+      dropzoneCard.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        dropzoneCard.classList.add('border-blue-600', 'bg-blue-50/40');
+      });
+      dropzoneCard.addEventListener('dragleave', () => {
+        dropzoneCard.classList.remove('border-blue-600', 'bg-blue-50/40');
+      });
+      dropzoneCard.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        dropzoneCard.classList.remove('border-blue-600', 'bg-blue-50/40');
+        const file = e.dataTransfer.files && e.dataTransfer.files[0];
+        if (!file) return;
+        if (!file.name.toLowerCase().endsWith('.pdf') && file.type !== 'application/pdf') {
+          showToast('PDF(.pdf) 파일만 업로드할 수 있습니다.', 'warn');
+          return;
+        }
+        const buf = await file.arrayBuffer();
+        await loadMainPdfBytes(new Uint8Array(buf), file.name);
+        showToast(`'${file.name}' 문서를 불러왔습니다.`, 'success');
+      });
+
+      // Upload image onto current page
+      document.getElementById('btnToolImage').addEventListener('click', () => {
+        document.getElementById('insertImageInput').click();
+      });
+      document.getElementById('insertImageInput').addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const img = new Image();
+          img.onload = () => {
+            const pageObj = state.pages[state.currentPageIndex];
+            if (!pageObj) return;
+            const maxW = 200;
+            const ratio = img.height / (img.width || 1);
+            const w = Math.min(maxW, img.width || 160);
+            const h = Math.round(w * ratio);
+            const newAnno = {
+              id: nextId('anno'),
+              type: 'image',
+              x: 120,
+              y: 140,
+              w: Math.max(40, w),
+              h: Math.max(40, h),
+              src: reader.result,
+              opacity: 100
+            };
+            pageObj.annotations.push(newAnno);
+            state.selectedAnnoId = newAnno.id;
+            setActiveTool('select');
+            pushHistory();
+            renderAnnotationLayer();
+            renderInspector();
+            renderThumbnails();
+            showToast('이미지가 현재 페이지에 추가되었습니다.', 'success');
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+      });
+
+      // Stamp menu
+      const stampBtn = document.getElementById('btnStampMenu');
+      const stampPopover = document.getElementById('stampPopover');
+      stampBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        stampPopover.classList.toggle('hidden');
+      });
+      window.addEventListener('click', () => stampPopover.classList.add('hidden'));
+
+      const stampPresets = {
+        approved: { text: '승인 완료\nAPPROVED', stroke: '#059669', fill: '#ecfdf5' },
+        reviewed: { text: '검토필\nREVIEWED', stroke: '#2563eb', fill: '#eff6ff' },
+        confidential: { text: '대외비\nCONFIDENTIAL', stroke: '#e11d48', fill: '#fff1f2' },
+        urgent: { text: '긴급 처리\nURGENT', stroke: '#d97706', fill: '#fffbeb' }
+      };
+      document.querySelectorAll('.stamp-option').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const preset = stampPresets[btn.dataset.stamp];
+          const pageObj = state.pages[state.currentPageIndex];
+          if (!preset || !pageObj) return;
+          const newAnno = {
+            id: nextId('anno'),
+            type: 'stamp',
+            x: 360,
+            y: 90,
+            w: 150,
+            h: 58,
+            text: preset.text,
+            fontSize: 14,
+            bold: true,
+            strokeColor: preset.stroke,
+            fillColor: preset.fill,
+            fillEnabled: true,
+            strokeWidth: 3,
+            opacity: 95
+          };
+          pageObj.annotations.push(newAnno);
+          state.selectedAnnoId = newAnno.id;
+          setActiveTool('select');
+          pushHistory();
+          renderAnnotationLayer();
+          renderInspector();
+          renderThumbnails();
+          showToast('스탬프가 페이지에 추가되었습니다.', 'success');
+        });
+      });
+
+      // Quick add buttons in empty inspector
+      document.getElementById('btnQuickAddText').addEventListener('click', () => {
+        const pageObj = state.pages[state.currentPageIndex];
+        if (!pageObj) return;
+        const newAnno = {
+          id: nextId('anno'),
+          type: 'text',
+          x: 160,
+          y: 180,
+          w: 210,
+          h: 46,
+          text: '여기에 텍스트를 입력하세요',
+          fontSize: 16,
+          bold: true,
+          strokeColor: '#0f172a',
+          fillColor: '#fef9c3',
+          fillEnabled: true,
+          strokeWidth: 1,
+          opacity: 100
+        };
+        pageObj.annotations.push(newAnno);
+        state.selectedAnnoId = newAnno.id;
+        pushHistory();
+        renderAnnotationLayer();
+        renderInspector();
+        renderThumbnails();
+      });
+
+      document.getElementById('btnQuickAddRect').addEventListener('click', () => {
+        const pageObj = state.pages[state.currentPageIndex];
+        if (!pageObj) return;
+        const newAnno = {
+          id: nextId('anno'),
+          type: 'rect',
+          x: 150,
+          y: 220,
+          w: 180,
+          h: 90,
+          strokeColor: '#2563eb',
+          fillColor: '#dbeafe',
+          fillEnabled: true,
+          strokeWidth: 3,
+          opacity: 85
+        };
+        pageObj.annotations.push(newAnno);
+        state.selectedAnnoId = newAnno.id;
+        pushHistory();
+        renderAnnotationLayer();
+        renderInspector();
+        renderThumbnails();
+      });
+
+      // Inspector input bindings
+      document.getElementById('propTextValue').addEventListener('input', (e) => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.text = e.target.value;
+        renderAnnotationLayer();
+        renderThumbnails();
+      });
+      document.getElementById('propFontSize').addEventListener('input', (e) => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.fontSize = Math.max(8, parseInt(e.target.value, 10) || 16);
+        renderAnnotationLayer();
+        renderThumbnails();
+      });
+      document.getElementById('propFontBold').addEventListener('click', () => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.bold = !anno.bold;
+        renderAnnotationLayer();
+        renderInspector();
+        renderThumbnails();
+      });
+      document.getElementById('propBgToggle').addEventListener('click', () => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.fillEnabled = !anno.fillEnabled;
+        renderAnnotationLayer();
+        renderInspector();
+        renderThumbnails();
+      });
+      document.getElementById('propStrokeColor').addEventListener('input', (e) => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.strokeColor = e.target.value;
+        document.getElementById('propStrokeColorHex').textContent = e.target.value.toUpperCase();
+        renderAnnotationLayer();
+        renderThumbnails();
+      });
+      document.getElementById('propFillColor').addEventListener('input', (e) => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.fillColor = e.target.value;
+        anno.fillEnabled = true;
+        document.getElementById('propFillEnabled').checked = true;
+        renderAnnotationLayer();
+        renderThumbnails();
+      });
+      document.getElementById('propFillEnabled').addEventListener('change', (e) => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.fillEnabled = e.target.checked;
+        renderAnnotationLayer();
+        renderInspector();
+        renderThumbnails();
+      });
+      document.getElementById('propStrokeWidth').addEventListener('input', (e) => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.strokeWidth = parseInt(e.target.value, 10) || 2;
+        renderAnnotationLayer();
+        renderThumbnails();
+      });
+      document.getElementById('propOpacity').addEventListener('input', (e) => {
+        const anno = getSelectedAnno();
+        if (!anno) return;
+        anno.opacity = parseInt(e.target.value, 10) || 100;
+        document.getElementById('propOpacityLabel').textContent = `${anno.opacity}%`;
+        renderAnnotationLayer();
+        renderThumbnails();
+      });
+
+      document.getElementById('btnBringFront').addEventListener('click', () => {
+        const pageObj = state.pages[state.currentPageIndex];
+        const anno = getSelectedAnno();
+        if (!pageObj || !anno) return;
+        pageObj.annotations = pageObj.annotations.filter(a => a.id !== anno.id);
+        pageObj.annotations.push(anno);
+        pushHistory();
+        renderAnnotationLayer();
+        renderThumbnails();
+      });
+
+      document.getElementById('btnDuplicateAnno').addEventListener('click', () => {
+        const pageObj = state.pages[state.currentPageIndex];
+        const anno = getSelectedAnno();
+        if (!pageObj || !anno) return;
+        const copy = JSON.parse(JSON.stringify(anno));
+        copy.id = nextId('anno');
+        copy.x += 20;
+        copy.y += 20;
+        pageObj.annotations.push(copy);
+        state.selectedAnnoId = copy.id;
+        pushHistory();
+        renderAnnotationLayer();
+        renderInspector();
+        renderThumbnails();
+      });
+
+      document.getElementById('btnDeleteAnno').addEventListener('click', () => {
+        const pageObj = state.pages[state.currentPageIndex];
+        const anno = getSelectedAnno();
+        if (!pageObj || !anno) return;
+        pageObj.annotations = pageObj.annotations.filter(a => a.id !== anno.id);
+        state.selectedAnnoId = null;
+        pushHistory();
+        renderAnnotationLayer();
+        renderInspector();
+        renderThumbnails();
+      });
+
+      // Page Navigation & Zoom
+      document.getElementById('btnPrevPage').addEventListener('click', () => {
+        if (state.currentPageIndex > 0) {
+          state.currentPageIndex--;
+          state.selectedAnnoId = null;
+          renderAll();
+        }
+      });
+      document.getElementById('btnNextPage').addEventListener('click', () => {
+        if (state.currentPageIndex < state.pages.length - 1) {
+          state.currentPageIndex++;
+          state.selectedAnnoId = null;
+          renderAll();
+        }
+      });
+      document.getElementById('btnZoomOut').addEventListener('click', () => {
+        state.zoom = Math.max(0.5, Math.round((state.zoom - 0.15) * 100) / 100);
+        renderAll();
+      });
+      document.getElementById('btnZoomIn').addEventListener('click', () => {
+        state.zoom = Math.min(1.75, Math.round((state.zoom + 0.15) * 100) / 100);
+        renderAll();
+      });
+
+      // Quick Swap button (e.g. 2P <-> 3P)
+      document.getElementById('btnSwapPagesQuick').addEventListener('click', () => {
+        const idxA = parseInt(document.getElementById('swapPageASelect').value, 10);
+        const idxB = parseInt(document.getElementById('swapPageBSelect').value, 10);
+        swapPages(idxA, idxB);
+      });
+
+      // Bottom page quick actions
+      document.getElementById('btnMovePagePrev').addEventListener('click', () => {
+        swapPages(state.currentPageIndex, state.currentPageIndex - 1);
+      });
+      document.getElementById('btnMovePageNext').addEventListener('click', () => {
+        swapPages(state.currentPageIndex, state.currentPageIndex + 1);
+      });
+      document.getElementById('btnRotatePage').addEventListener('click', () => {
+        const p = state.pages[state.currentPageIndex];
+        if (!p) return;
+        p.rotation = (p.rotation + 90) % 360;
+        pushHistory();
+        renderAll();
+      });
+      document.getElementById('btnDuplicatePage').addEventListener('click', () => {
+        const p = state.pages[state.currentPageIndex];
+        if (!p) return;
+        const copy = JSON.parse(JSON.stringify(p));
+        copy.id = nextId('page');
+        copy.originLabel = `${p.originLabel} (복제본)`;
+        copy.annotations.forEach(a => { a.id = nextId('anno'); });
+        state.pages.splice(state.currentPageIndex + 1, 0, copy);
+        state.currentPageIndex++;
+        pushHistory();
+        showToast('현재 페이지가 복제되었습니다.', 'success');
+        renderAll();
+      });
+      document.getElementById('btnDeleteCurrentPage').addEventListener('click', () => {
+        deletePageAt(state.currentPageIndex);
+      });
+
+      // Add Blank Page
+      document.getElementById('btnAddBlankPage').addEventListener('click', () => {
+        addBlankPageAt(state.currentPageIndex + 1);
+      });
+
+      // Insert PDF Modal events
+      document.getElementById('btnOpenInsertPdfModal').addEventListener('click', () => openInsertPdfModal());
+      document.getElementById('btnCloseInsertModal').addEventListener('click', () => {
+        document.getElementById('insertPdfModal').classList.add('hidden');
+      });
+      document.getElementById('btnCancelInsertModal').addEventListener('click', () => {
+        document.getElementById('insertPdfModal').classList.add('hidden');
+      });
+      document.getElementById('btnPickLocalInsertPdf').addEventListener('click', () => {
+        document.getElementById('insertPdfInput').click();
+      });
+      document.getElementById('insertPdfInput').addEventListener('change', async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        const pdfJsDoc = await window.pdfjsLib.getDocument({ data: bytes.slice(0) }).promise;
+        const srcId = nextId('src');
+        const srcObj = {
+          id: srcId,
+          name: file.name,
+          bytes,
+          pdfJsDoc,
+          numPages: pdfJsDoc.numPages
+        };
+        state.pdfSources[srcId] = srcObj;
+        state.pendingInsertSource = srcObj;
+        updateInsertModalFileDisplay();
+        e.target.value = '';
+      });
+
+      document.getElementById('btnConfirmInsertPdf').addEventListener('click', async () => {
+        const src = state.pendingInsertSource;
+        if (!src) {
+          showToast('삽입할 PDF 파일을 먼저 선택해 주세요.', 'warn');
+          return;
+        }
+        state.pdfSources[src.id] = src;
+        const rangeStr = document.getElementById('insertPageRangeInput').value;
+        const pageIndices = parsePageRange(rangeStr, src.numPages);
+        const targetPos = parseInt(document.getElementById('insertTargetPositionSelect').value, 10) || 0;
+
+        const insertedPages = [];
+        for (const pIdx of pageIndices) {
+          const pdfPage = await src.pdfJsDoc.getPage(pIdx + 1);
+          const vp = pdfPage.getViewport({ scale: 1 });
+          insertedPages.push({
+            id: nextId('page'),
+            sourceId: src.id,
+            sourcePageIndex: pIdx,
+            originLabel: `삽입PDF ${pIdx + 1}P`,
+            width: vp.width || 595.28,
+            height: vp.height || 841.89,
+            rotation: 0,
+            annotations: []
+          });
+        }
+
+        state.pages.splice(targetPos, 0, ...insertedPages);
+        state.currentPageIndex = targetPos;
+        state.selectedAnnoId = null;
+        document.getElementById('insertPdfModal').classList.add('hidden');
+        pushHistory();
+        showToast(`'${src.name}'에서 ${insertedPages.length}개 페이지를 ${targetPos + 1}페이지 위치에 삽입했습니다!`, 'success');
+        renderAll();
+      });
+
+      // Organizer view toggles
+      document.getElementById('btnToggleOrganizer').addEventListener('click', () => toggleOrganizerView());
+      document.getElementById('btnCloseOrganizer').addEventListener('click', () => toggleOrganizerView(false));
+      document.getElementById('btnOrganizerSwapSelected').addEventListener('click', () => {
+        const ids = Array.from(state.organizerSelectedIds);
+        if (ids.length !== 2) return;
+        const idxA = state.pages.findIndex(p => p.id === ids[0]);
+        const idxB = state.pages.findIndex(p => p.id === ids[1]);
+        if (idxA !== -1 && idxB !== -1) {
+          swapPages(idxA, idxB);
+        }
+      });
+      document.getElementById('btnOrganizerDeleteSelected').addEventListener('click', () => {
+        if (state.organizerSelectedIds.size >= state.pages.length) {
+          showToast('모든 페이지를 삭제할 수는 없습니다.', 'warn');
+          return;
+        }
+        const count = state.organizerSelectedIds.size;
+        state.pages = state.pages.filter(p => !state.organizerSelectedIds.has(p.id));
+        state.organizerSelectedIds.clear();
+        state.currentPageIndex = Math.min(state.currentPageIndex, state.pages.length - 1);
+        pushHistory();
+        showToast(`선택한 ${count}개 페이지가 삭제되었습니다.`, 'info');
+        renderAll();
+      });
+
+      // Direct Print Execution
+      document.getElementById('btnPrintPdf').addEventListener('click', executePrintDocument);
+
+      // Undo / Redo & Export
+      document.getElementById('btnUndo').addEventListener('click', () => restoreHistory(state.historyIndex - 1));
+      document.getElementById('btnRedo').addEventListener('click', () => restoreHistory(state.historyIndex + 1));
+      document.getElementById('btnExportPdf').addEventListener('click', exportEditedPdf);
+
+      // Keyboard shortcuts (Ctrl+Z, Ctrl+Y, Ctrl+P, Delete)
+      window.addEventListener('keydown', (e) => {
+        const activeTag = document.activeElement ? document.activeElement.tagName.toLowerCase() : '';
+        if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select') return;
+
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+          e.preventDefault();
+          restoreHistory(state.historyIndex - 1);
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+          e.preventDefault();
+          restoreHistory(state.historyIndex + 1);
+        } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
+          if (state.pages.length > 0) {
+            e.preventDefault();
+            executePrintDocument();
+          }
+        } else if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedAnnoId) {
+          e.preventDefault();
+          const pageObj = state.pages[state.currentPageIndex];
+          if (pageObj) {
+            pageObj.annotations = pageObj.annotations.filter(a => a.id !== state.selectedAnnoId);
+            state.selectedAnnoId = null;
+            pushHistory();
+            renderAnnotationLayer();
+            renderInspector();
+            renderThumbnails();
+          }
+        }
+      });
+    }
+
+    // Initialize Application (Starts cleanly on the Upload Screen without any sample PDF)
+    window.addEventListener('DOMContentLoaded', async () => {
+      if (window.lucide) window.lucide.createIcons();
+      setupCanvasCreationHandlers();
+      bindEvents();
+      await renderAll();
+    });
+  </script>
+</body>
+</html>
